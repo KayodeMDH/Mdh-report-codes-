@@ -1,0 +1,37 @@
+library(tidyverse)
+library(Rnssp)
+library(janitor)
+library(shiny)
+library(shinydashboard)
+
+# TODO Add folder name to the end of gl_path below (i.e. USERNAME/<folder name here>)
+gl_path <- "/opt/sas/shared/homes/USERNAME/Textminning_report"
+Sys.setenv(RSTUDIO_PANDOC="/usr/lib/rstudio-server/bin/quarto/bin/tools/x86_64")
+
+setwd(gl_path)
+
+load("~/myProfile.rda")
+
+# end_date <- floor_date(Sys.Date(), unit = "1 week") - 1
+# start_date <- floor_date(end_date - 89, unit = "1 week")
+
+# Set end_date to always be the current date
+end_date <- Sys.Date()
+
+# Calculate start_date as 89 days before end_date, rounded to the start of the prior week
+start_date <- floor_date(end_date - 89, unit = "week")
+
+has_been_E <- TRUE
+site <- "Minnesota"
+
+# Site ID for MN is already built into URL
+url <- paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/dataDetails/csv?datasource=va_hosp&startDate=", format(start_date, "%d%b%Y"), "&medicalGroupingSystem=essencesyndromes&userId=2362&endDate=", format(end_date, "%d%b%Y"), "&percentParam=noPercent&site=904&aqtTarget=DataDetails&geographySystem=hospital&detector=nodetectordetector&timeResolution=daily&hasBeenE=1&field=Date&field=WeekYear&field=ChiefComplaintParsed&field=DischargeDiagnosis&field=DDParsed&field=CCDD&field=CCDDParsed")
+
+definition <- paste("API URL for all MN ED Encounters:", url)
+
+api_data <- try(myProfile$get_api_data(url, fromCSV = TRUE), silent = TRUE)
+
+rmarkdown::render(
+  input = paste0(gl_path, "/text_mining_rmd_to_automate.Rmd"),
+  output_file = paste0(gl_path, "/MN_Text_Mining_Report.html")
+)
