@@ -1,0 +1,293 @@
+#Run this report first
+
+library(tidyverse)
+library(Rnssp)
+library(lubridate)
+library(janitor)
+library(MMWRweek)
+library(gratia)
+
+#Replace USERNAME with your username. 
+gl_path <- "/opt/sas/shared/homes/USERNAME/MN_API_Pulls_Respiratory_Report"
+Sys.setenv(RSTUDIO_PANDOC="/usr/lib/rstudio-server/bin/quarto/bin/tools")
+
+setwd(gl_path)
+
+# API pulls-------------------------------------------------------------------------------------------------------------
+load("~/myProfile.rda")
+
+#end_date <- format(floor_date(Sys.Date(), unit = "1 week") - 1, "%d%b%Y")
+end_date <- format(Sys.Date(), "%d%b%Y")
+
+# # Set start_date to the beginning of 2023
+# start_date <- as.Date("2023-01-01")
+# startDate <- format(start_date, "%d%b%y")
+# 
+# # Set end_date to the current date
+# end_date <- Sys.Date()
+# endDate <- format(end_date, "%d%b%y")
+
+# Current year pull-----------------------------------------------------------------------------------------------------
+url1 <- paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder?endDate=", end_date, "&facilityfips=27001&facilityfips=27003&facilityfips=27005&facilityfips=27007&facilityfips=27009&facilityfips=27011&facilityfips=27013&facilityfips=27015&facilityfips=27017&facilityfips=27019&facilityfips=27021&facilityfips=27023&facilityfips=27025&facilityfips=27027&facilityfips=27029&facilityfips=27031&facilityfips=27033&facilityfips=27035&facilityfips=27037&facilityfips=27039&facilityfips=27041&facilityfips=27043&facilityfips=27045&facilityfips=27047&facilityfips=27049&facilityfips=27051&facilityfips=27053&facilityfips=27055&facilityfips=27057&facilityfips=27059&facilityfips=27061&facilityfips=27063&facilityfips=27065&facilityfips=27067&facilityfips=27069&facilityfips=27071&facilityfips=27073&facilityfips=27075&facilityfips=27077&facilityfips=27079&facilityfips=27081&facilityfips=27083&facilityfips=27085&facilityfips=27087&facilityfips=27089&facilityfips=27091&facilityfips=27093&facilityfips=27095&facilityfips=27097&facilityfips=27099&facilityfips=27101&facilityfips=27103&facilityfips=27105&facilityfips=27107&facilityfips=27109&facilityfips=27111&facilityfips=27113&facilityfips=27115&facilityfips=27117&facilityfips=27119&facilityfips=27121&facilityfips=27123&facilityfips=27125&facilityfips=27127&facilityfips=27129&facilityfips=27131&facilityfips=27133&facilityfips=27135&facilityfips=27137&facilityfips=27139&facilityfips=27141&facilityfips=27143&facilityfips=27145&facilityfips=27147&facilityfips=27149&facilityfips=27151&facilityfips=27153&facilityfips=27155&facilityfips=27157&facilityfips=27159&facilityfips=27161&facilityfips=27163&facilityfips=27165&facilityfips=27167&facilityfips=27169&facilityfips=27171&facilityfips=27173&percentParam=ccddCategory&datasource=va_hosp&startDate=01Jul2023&medicalGroupingSystem=essencesyndromes&userId=2362&aqtTarget=TableBuilder&ccddCategory=cdc%20broad%20acute%20respiratory%20dd%20v1&ccddCategory=cdc%20influenza%20dd%20v1&ccddCategory=cdc%20respiratory%20syncytial%20virus%20dd%20v1&ccddCategory=cdc%20covid-specific%20dd%20v1&geographySystem=hospital&detector=nodetectordetector&timeResolution=daily&hasBeenE=1&rowFields=timeResolution&rowFields=ccddCategory&rowFields=ageschool&columnField=facilityfips")
+
+api_data1 <- myProfile$get_api_data(url1)
+
+write_csv(api_data1, "MN_report_api_data_daily.csv")
+
+# Multiyear weekly pull with DQ filters---------------------------------------------------------------------------------
+url2 <- paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/tableBuilder?endDate=", end_date, "&facilityfips=27001&facilityfips=27003&facilityfips=27005&facilityfips=27007&facilityfips=27009&facilityfips=27011&facilityfips=27013&facilityfips=27015&facilityfips=27017&facilityfips=27019&facilityfips=27021&facilityfips=27023&facilityfips=27025&facilityfips=27027&facilityfips=27029&facilityfips=27031&facilityfips=27033&facilityfips=27035&facilityfips=27037&facilityfips=27039&facilityfips=27041&facilityfips=27043&facilityfips=27045&facilityfips=27047&facilityfips=27049&facilityfips=27051&facilityfips=27053&facilityfips=27055&facilityfips=27057&facilityfips=27059&facilityfips=27061&facilityfips=27063&facilityfips=27065&facilityfips=27067&facilityfips=27069&facilityfips=27071&facilityfips=27073&facilityfips=27075&facilityfips=27077&facilityfips=27079&facilityfips=27081&facilityfips=27083&facilityfips=27085&facilityfips=27087&facilityfips=27089&facilityfips=27091&facilityfips=27093&facilityfips=27095&facilityfips=27097&facilityfips=27099&facilityfips=27101&facilityfips=27103&facilityfips=27105&facilityfips=27107&facilityfips=27109&facilityfips=27111&facilityfips=27113&facilityfips=27115&facilityfips=27117&facilityfips=27119&facilityfips=27121&facilityfips=27123&facilityfips=27125&facilityfips=27127&facilityfips=27129&facilityfips=27131&facilityfips=27133&facilityfips=27135&facilityfips=27137&facilityfips=27139&facilityfips=27141&facilityfips=27143&facilityfips=27145&facilityfips=27147&facilityfips=27149&facilityfips=27151&facilityfips=27153&facilityfips=27155&facilityfips=27157&facilityfips=27159&facilityfips=27161&facilityfips=27163&facilityfips=27165&facilityfips=27167&facilityfips=27169&facilityfips=27171&facilityfips=27173&percentParam=ccddCategory&datasource=va_hosp&startDate=01Jul2023&medicalGroupingSystem=essencesyndromes&userId=2362&aqtTarget=TableBuilder&ccddCategory=cdc%20broad%20acute%20respiratory%20dd%20v1&ccddCategory=cdc%20covid-specific%20dd%20v1&ccddCategory=cdc%20influenza%20dd%20v1&ccddCategory=cdc%20respiratory%20syncytial%20virus%20dd%20v1&geographySystem=hospital&detector=nodetectordetector&timeResolution=weekly&hasBeenE=1&rowFields=timeResolution&rowFields=ccddCategory&rowFields=ageschool&columnField=facilityfips")
+
+api_data2 <- myProfile$get_api_data(url2)
+
+write_csv(api_data2, "MN_report_api_data_weekly.csv")
+
+# Load data-------------------------------------------------------------------------------------------------------------
+api_data1 <- read_csv("MN_report_api_data_daily.csv")
+api_data2 <- read_csv("MN_report_api_data_weekly.csv")
+
+mn_regions <- read_csv("mn_regions.csv")
+
+# Daily data from current year------------------------------------------------------------------------------------------
+region_age_daily <- api_data1 %>%
+  clean_names() %>%
+  select(
+    date = time_resolution, 
+    ccdd_category, 
+    age_group = ageschool, 
+    fips = facilityfips_raw,
+    display_name = facilityfips,
+    data_count = numerator, 
+    all_count = denominator
+  ) %>%
+  mutate(
+    date = as.Date(date), 
+    age_group = case_when(
+      age_group == "00-04" ~ "0-4", 
+      age_group == "05-11" ~ "5-11", 
+      age_group %in% c("18-25", "26-34", "35-44") ~ "18-44", 
+      age_group %in% c("45-54", "55-64") ~ "45-64",
+      TRUE ~ age_group
+    )
+  ) %>%
+  left_join(mn_regions, by = "fips") %>%
+  mutate(
+    region = factor(region, levels = paste(c("Northwest", "Northeast", "West Central", "Central", "Metro", "Southwest", "South Central", "Southeast"), "Region"))
+  ) %>%
+  group_by(date, region, ccdd_category, age_group) %>%
+  summarise_at(c("data_count", "all_count"), sum) %>%
+  ungroup() %>%
+  mutate(age_group = factor(age_group, levels = c("0-4", "5-11", "12-17", "18-44", "45-64", "65+", "Unknown"))) %>%
+  arrange(region, ccdd_category, age_group, date) %>%
+  mutate(
+    percent = (data_count / all_count) * 100, 
+    percent = ifelse(is.nan(percent), 0, percent)
+  ) %>%
+  group_by(region, ccdd_category, age_group) %>%
+  alert_ewma(t = date, y = data_count) %>%
+  select(
+    -baseline_expected, 
+    -test_statistic
+  ) %>%
+  rename(
+    alert_count = alert,
+    p.value_count = p.value
+  ) %>%
+  alert_ewma(t = date, y = percent) %>%
+  select(
+    -baseline_expected, 
+    -test_statistic
+  ) %>%
+  rename(
+    alert_prop = alert,
+    p.value_prop = p.value
+  ) %>%
+  ungroup() 
+
+state_age_daily <- region_age_daily %>%
+  group_by(ccdd_category, age_group, date) %>%
+  summarise_at(c("data_count", "all_count"), sum) %>%
+  ungroup() %>%
+  mutate(
+    percent = (data_count / all_count) * 100, 
+    percent = ifelse(is.nan(percent), 0, percent)
+  ) %>%
+  group_by(ccdd_category, age_group) %>%
+  alert_ewma(t = date, y = data_count) %>%
+  select(
+    -baseline_expected, 
+    -test_statistic
+  ) %>%
+  rename(
+    alert_count = alert,
+    p.value_count = p.value
+  ) %>%
+  alert_ewma(t = date, y = percent) %>%
+  select(
+    -baseline_expected, 
+    -test_statistic
+  ) %>%
+  rename(
+    alert_prop = alert,
+    p.value_prop = p.value
+  ) %>%
+  ungroup()
+
+region_daily <- region_age_daily %>%
+  group_by(region, ccdd_category, date) %>%
+  summarise_at(c("data_count", "all_count"), sum) %>%
+  ungroup() %>%
+  mutate(
+    percent = (data_count / all_count) * 100, 
+    percent = ifelse(is.nan(percent), 0, percent)
+  ) %>%
+  group_by(region, ccdd_category) %>%
+  alert_ewma(t = date, y = data_count) %>%
+  select(
+    -baseline_expected, 
+    -test_statistic
+  ) %>%
+  rename(
+    alert_count = alert,
+    p.value_count = p.value
+  ) %>%
+  alert_ewma(t = date, y = percent) %>%
+  select(
+    -baseline_expected, 
+    -test_statistic
+  ) %>%
+  rename(
+    alert_prop = alert,
+    p.value_prop = p.value
+  ) %>%
+  ungroup()
+
+state_daily <- region_daily %>%
+  group_by(ccdd_category, date) %>%
+  summarise_at(c("data_count", "all_count"), sum) %>%
+  ungroup() %>%
+  mutate(
+    percent = (data_count / all_count) * 100, 
+    percent = ifelse(is.nan(percent), 0, percent)
+  ) %>%
+  group_by(ccdd_category) %>%
+  alert_ewma(t = date, y = data_count) %>%
+  select(
+    -baseline_expected, 
+    -test_statistic
+  ) %>%
+  rename(
+    alert_count = alert,
+    p.value_count = p.value
+  ) %>%
+  alert_ewma(t = date, y = percent) %>%
+  select(
+    -baseline_expected, 
+    -test_statistic
+  ) %>%
+  rename(
+    alert_prop = alert,
+    p.value_prop = p.value
+  ) %>%
+  ungroup()
+
+# Weekly data from 2018 to current year---------------------------------------------------------------------------------
+region_age_weekly <- api_data2 %>%
+  clean_names() %>%
+  separate(time_resolution, c("year", "week"), sep = "-") %>%
+  mutate(
+    week = as.numeric(week), 
+    year = as.numeric(year), 
+    date = MMWRweek2Date(year, week)
+  ) %>%
+  select(
+    date, 
+    ccdd_category, 
+    age_group = ageschool, 
+    fips = facilityfips_raw, 
+    display_name = facilityfips,
+    data_count = numerator, 
+    all_count = denominator
+  ) %>%
+  mutate(
+    age_group = case_when(
+      age_group == "00-04" ~ "0-4", 
+      age_group == "05-11" ~ "5-11", 
+      age_group %in% c("18-25", "26-34", "35-44") ~ "18-44", 
+      age_group %in% c("45-54", "55-64") ~ "45-64",
+      TRUE ~ age_group
+    )
+  ) %>%
+  left_join(mn_regions, by = "fips") %>%
+  mutate(
+    region = factor(region, levels = paste(c("Northwest", "Northeast", "West Central", "Central", "Metro", "Southwest", "South Central", "Southeast"), "Region"))
+  ) %>%
+  group_by(date, region, ccdd_category, age_group) %>%
+  summarise_at(c("data_count", "all_count"), sum) %>%
+  ungroup() %>%
+  mutate(age_group = factor(age_group, levels = c("0-4", "5-11", "12-17", "18-44", "45-64", "65+", "Unknown"))) %>%
+  arrange(region, ccdd_category, age_group, date) %>%
+  mutate(
+    percent = (data_count / all_count) * 100, 
+    percent = ifelse(is.nan(percent), 0, percent)
+  ) 
+
+state_age_weekly <- region_age_weekly %>%
+  group_by(ccdd_category, age_group, date) %>%
+  summarise_at(c("data_count", "all_count"), sum) %>%
+  ungroup() %>%
+  mutate(
+    percent = (data_count / all_count) * 100, 
+    percent = ifelse(is.nan(percent), 0, percent)
+  ) 
+
+region_weekly <- region_age_weekly %>%
+  group_by(region, ccdd_category, date) %>%
+  summarise_at(c("data_count", "all_count"), sum) %>%
+  ungroup() %>%
+  mutate(
+    percent = (data_count / all_count) * 100, 
+    percent = ifelse(is.nan(percent), 0, percent)
+  )
+
+state_weekly <- region_weekly %>%
+  group_by(ccdd_category, date) %>%
+  summarise_at(c("data_count", "all_count"), sum) %>%
+  ungroup() %>%
+  mutate(
+    percent = (data_count / all_count) * 100, 
+    percent = ifelse(is.nan(percent), 0, percent)
+  )
+
+# Run analytics---------------------------------------------------------------------------------------------------------
+source("analytic_functions.R")
+
+region_age_daily_analyzed <- region_age_daily %>%
+  group_by(region, age_group, ccdd_category) %>%
+  ts_analyze()
+
+state_age_daily_analyzed <- state_age_daily %>%
+  group_by(age_group, ccdd_category) %>%
+  ts_analyze()
+
+region_daily_analyzed <- region_daily %>%
+  group_by(region, ccdd_category) %>%
+  ts_analyze()
+
+state_daily_analyzed <- state_daily %>%
+  group_by(ccdd_category) %>%
+  ts_analyze()
+
+save(
+  file = "MN_report_data.RData", 
+  list = c(
+    "region_age_daily_analyzed", 
+    "state_age_daily_analyzed", 
+    "region_daily_analyzed", 
+    "state_daily_analyzed",
+    "region_age_weekly", 
+    "state_age_weekly", 
+    "region_weekly", 
+    "state_weekly"
+  )
+)
+
