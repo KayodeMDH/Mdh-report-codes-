@@ -1,0 +1,3222 @@
+---
+title: "Minnesota State Syndromic Data Quality Report"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+description: This is a state emergency department data quality report for the National
+  Syndromic Surveillance Program (NSSP). Please knit with parameters.
+output:
+  html_document:
+    toc: yes
+editor_options:
+   chunk_output_type: inline
+---
+
+<style type="text/css">
+  .main-container {
+    max-width: 1500px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+</style>
+
+```{r libraries, message=FALSE, warning=FALSE, echo=FALSE, include=FALSE}
+options(warn = -1)
+options(selfcontained = TRUE)
+#knitr::opts_chunk$set(cache = FALSE)
+library(tidyverse)
+library(dtplyr)
+library(Rnssp)
+library(lubridate)
+library(DT)
+library(kableExtra)
+library(scales)
+library(janitor)
+library(htmltools)
+library(plotly)
+library(crosstalk)
+library(patchwork)
+library(tsibble)
+library(shadowtext)
+library(RODBC)
+library(reactable)
+library(reactablefmtr)
+
+```
+
+### About
+
+This template is intended to be used to monitor site-level emergency department (ED) syndromic surveillance data quality by state-level National Syndromic Surveillance Program (NSSP) participants. If you would like to remove or omit specific hospital facilities from data quality metrics (e.g., due to a known data quality issue), you will need to do so manually in the pull code chunk above (see the commented out dplyr::filter() statement at line # 171).
+
+## Introduction
+
+This report pulls and analyzes de-identified MN syndromic patient encounter data limited to emergency department ("ED") patient encounters from active, NSSP-participating "Emergency Care" facilities occurring on/between **`r start_date_lab`** through **`r end_date_lab`**.[^1] 
+
+Data quality metrics are presented for the MN_PR_Processed table and for live, production-quality ESSENCE data using the ESSENCE application programming interface (API) where possible. 
+
+Facility counts, patient counts, and message counts may vary, as ED facilities are independently responsible for their own data quality and how often/quickly patient encounter data is completed, batched, and sent to NSSP.
+
+- This report joins patient messages and encounters by C_Biosense_Facility_ID, and thus should match displayed active facilities in ESSENCE. 
+- The patient encounter dates analyzed include a built in "grace period" of 24 hours.
+
+[^1]: "PR" indicates "production," or syndromic surveillance patient encounter data from actual patients. By comparison, the "ST" tables contain staging (or "test") data.
+
+## Data Quality Elements
+
+-   **ED Coverage**\
+-   **Timeliness**\
+-   **Completeness**\
+-   **Validity**\
+
+# ED Coverage {.tabset .tabset-fade .tabset-pills}
+
+Click on each tab below to view the associated plot or table as indicated. 
+
+## Active MN Emergency Facilities, by Day
+
+The following graph displays the number of active syndromic emergency facilities that have submitted patient encounter data, site-wide from **`r start_date_lab`** through **`r end_date_lab`**.
+
+```{r facility_count, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', cache=FALSE}
+
+facility <- facility.count %>%
+  rename(
+    date = timeResolution,
+    hospital = hospitalGrouping,
+    encounters = count
+  ) %>%
+  filter(encounters > 0) %>%
+  mutate(
+    date = as.Date(date),
+    hospital = gsub("^.{0,3}", "", hospital),
+    hospital = str_trim(hospital, side = "both")
+  )
+
+facilities <- facility %>%
+  group_by(date) %>%
+  summarize(hospitals = n()) %>%
+  ungroup()
+
+
+ab <- list(
+  title = "Unique ED Facilities",
+  zeroline = FALSE,
+  showline = FALSE,
+  showticklabels = TRUE,
+  showgrid = TRUE,
+  rangemode = "tozero"
+)
+
+```
+
+```{r facility_count_plot, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', cache=FALSE}
+plotly::plot_ly(facilities,
+  x = ~date,
+  y = ~hospitals,
+  type = "scatter",
+  mode = "lines+markers"
+) %>%
+  plotly::layout(
+    title = "Syndromic ED Facilities Online by Day",
+    yaxis = ab,
+    xaxis = list(title = "Date"),
+    showlegend = F
+  )
+```
+
+## Total MN ED Patient Encounters by Day
+
+The plot below represents the total number of ED patient encounters by day, from `r start_date_lab` through `r end_date_lab`.
+
+```{r daily_encounters, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+daily.encounters <- facility %>%
+  group_by(date) %>%
+  summarize(total_encounters = sum(encounters))
+
+ac <- list(
+  title = "Total ED Encounters",
+  zeroline = FALSE,
+  showline = FALSE,
+  showticklabels = TRUE,
+  showgrid = TRUE,
+  rangemode = "tozero"
+)
+
+plotly::plot_ly(daily.encounters,
+  x = ~date,
+  y = ~total_encounters,
+  type = "scatter",
+  mode = "lines+markers"
+) %>%
+  plotly::layout(
+    title = "Total ED Visits by Day",
+    yaxis = ac,
+    xaxis = list(title = "Date"),
+    showlegend = F
+  )
+```
+
+## Total MN ED Patient Messages by Day
+
+The plot below contains total ED message volume by day, from `r start_date_lab` through `r end_date_lab`.
+
+```{r messagesperday, echo=FALSE, warning=FALSE, message=FALSE, fig.align='center'}
+# Summarize total messages per day to check for noticeable facility drop outs
+messages.by.day <- ED.messages %>%
+  group_by(C_Visit_Date) %>%
+  summarize(`Total Messages` = n()) %>%
+  ungroup()
+
+aa <- list(
+  title = "Number of Messages",
+  zeroline = FALSE,
+  showline = FALSE,
+  showticklabels = TRUE,
+  showgrid = TRUE,
+  range = c(0, 100000)
+)
+
+plotly::plot_ly(messages.by.day,
+  x = ~C_Visit_Date,
+  y = ~`Total Messages`,
+  name = "Total Messages",
+  type = "scatter",
+  mode = "lines+markers",
+  line = list(color = "green"),
+  marker = list(color = "green")
+) %>%
+  plotly::layout(
+    title = "Total Syndromic Emergency Messages by Day",
+    yaxis = aa,
+    xaxis = list(title = "Date")
+  )
+```
+
+## Onboarding MN ED Facilities
+
+```{r onboard, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+# Table containing onboarding facilities
+onboarding <- onboarding %>%
+  dplyr::select(Facility_Name = Facility_Name, C_Biosense_Facility_ID) %>%
+  arrange(Facility_Name)
+
+datatable(onboarding,
+  extensions = "Buttons",
+  options = list(
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel", "pdf", "print"),
+    pageLength = 15,
+    autoWidth = T,
+    scrollY = T,
+    order = list(0, "asc")
+  ),
+  rownames = FALSE
+)
+```
+
+# Timeliness {.tabset .tabset-fade .tabset-pills}
+
+A single patient encounter (or "ED Visit") usually results in multiple, distinct HL7 messages sent over a period of days or weeks containing updates to various data fields from that patient encounter.
+
+Facilities vary in how quickly they send completed patient encounter information, so NSSP monitors and enforces certain timeliness criteria to encourage facilities to submit timely syndromic surveillance data. Overall, or first-message timeliness is calculated from the **first message received by NSSP** from each ED encounter compared to the actual date and time of that patient encounter. This value is typically reported as a mean or median number of hours aggregated across each hospital facility.
+
+More specifically, overall timeliness (or "Delay"/"Lag") is reported as the numeric time difference (in hours) between the physical patient encounter, **C_Visit_Date_Time,**[^2] and the **first/earliest** **Arrived_Date_Time**[^3]value found in all messages related to that unique patient encounter (time stamp automatically generated and applied upon each message's arrival to the BioSense platform).
+
+C_Visit_Date_Time is reported in each site's respective time zone, so Arrived_Date_Time must be adjusted, or offset, by the corresponding number of hours to avoid inflating delay by the same number of hours (Arrived_Date_Time is recorded in UTC/GMT). As an example, the Arrived_Date_Time assigned to HL7 messages sent by a hospital facility located in the Eastern Time zone must be reduced by four hours during daylight savings time (as EDT is UTC/GMT -4), and five hours during standard time (as EST is UTC/GMT -5).
+
+[^2]: NSSP-calculated variable that serves as the date/time of encounter. This variable is populated with the earliest date-time referenced in the message, which is usually Admit_Date_Time.
+
+[^3]: NSSP-generated time stamp applied upon message arrival at Biosense Platform
+
+NSSP has stipulated that the first message from every emergency patient encounter should be received within 24 hours (80% site-wide, at a minimum), and classifies messages into one of three timeliness categories:
+
+-   **\<24 Hours** - first encounter message received **less than 24 hours** after patient encounter
+-   **24-48 Hours** - first encounter message received **at least 24, but less than 48 hours** after patient encounter
+-   **\>48 Hours** - first encounter message received **more than 48 hours** after patient encounter
+
+The following plots include analysis of MN's site-wide syndromic timeliness (ED only), and counts and percentage of visits by NSSP timeliness category (by facility).
+
+## Site-wide Timeliness
+
+MN's site-wide timeliness, by percentage of patient encounters per NSSP timeliness category.
+
+```{r site_timeliness_overall, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+# Calculate first message lag - take earliest Arrived_Date_Time per unique encounter, slice to get earliest message, slice again in case of tied messages, cut into NSSP Timeliness Categories
+lag <- ED.messages %>%
+  group_by(C_Biosense_ID) %>%
+  slice(which.min(Arrived_Date_Time)) %>%
+  slice(1) %>%
+  mutate(lag = round(as.numeric(difftime(Arrived_Date_Time, C_Visit_Date_Time, units = "hours"))), 2) %>%
+  mutate(TimelinessCategory = cut(lag,
+    breaks = c(-Inf, 24, 48, Inf),
+    labels = c("<24 Hours", "24-48 Hours", ">48 Hours")
+  )) %>%
+  ungroup()
+
+# Create table and proportion table for overall timeliness plot
+lag.table <- as.data.frame(prop.table(table(lag$TimelinessCategory)))
+colnames(lag.table) <- c("Timeliness Category", "Percent")
+
+lag.table <- lag.table %>%
+  mutate(Percent = round(Percent, 2)) %>%
+  mutate(`Timeliness Category` = fct_relevel(`Timeliness Category`, c(">48 Hours", "24-48 Hours", "<24 Hours")))
+
+ggplot(lag.table) +
+  aes(
+    x = lag.table$`Timeliness Category`,
+    fill = `Timeliness Category`,
+    weight = lag.table$`Percent`,
+    text = lag.table$`Percent`
+  ) +
+  geom_bar(color = "black") +
+  coord_flip() +
+  scale_fill_manual("Legend",
+    values = c(
+      "<24 Hours" = "#2ca02c",
+      "24-48 Hours" = "blue",
+      ">48 Hours" = "red"
+    )
+  ) +
+  labs(
+    x = "NSSP Timeliness Category",
+    y = "Percent",
+    title = "ED Visits by NSSP Timeliness Category (Percentage)"
+  ) +
+  theme_bw() +
+  geom_text(aes(y = lag.table$`Percent`),
+    label = scales::percent(lag.table$`Percent`),
+    nudge_y = 0.06,
+    size = 5
+  ) +
+  scale_y_discrete(expand = expansion(mult = c(0, 0.12))) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+## Facility ED Visit Counts by NSSP Timeliness Category
+
+These graphs display facility encounter counts for each timeliness category and facility-level percentages for each timeliness category, respectively.[^6]
+
+[^6]: Note: the number of ED facilities represented depends upon how many emergency facilities are currently sending emergency department patient encounter messages, and whether those facilities could be joined to an active ED facility listed in either the MN_MFT (master facility table) or the MN_Operational_Crosswalk table.
+
+```{r delay_counts, echo=FALSE,warning=FALSE,message=FALSE, fig.height=16,fig.width=12}
+lag.counts <- as.data.frame(table(lag$Facility_Name, lag$TimelinessCategory))
+
+colnames(lag.counts) <- c("Facility Name", "Timeliness Category", "Total")
+
+delay.plot <- data.frame(lag.counts %>%
+  pivot_wider(
+    names_from = `Timeliness Category`,
+    values_from = Total
+  ), stringsAsFactors = F)
+
+colnames(delay.plot) <- c("Facility Name", "<24 Hours", "24-48 Hours", ">48 Hours")
+
+delay.plot$`Facility Name` <- factor(delay.plot$`Facility Name`, levels = unique(delay.plot$`Facility Name`)[order(delay.plot$`Facility Name`, decreasing = TRUE)])
+
+ad <- list(
+  title = "",
+  zeroline = FALSE,
+  showline = FALSE,
+  showticklabels = TRUE,
+  showgrid = FALSE
+)
+
+plotly::plot_ly(delay.plot,
+  y = ~`Facility Name`,
+  x = ~`<24 Hours`,
+  type = "bar",
+  name = "<24 Hours",
+  marker = list(color = "green")
+) %>%
+  plotly::add_trace(
+    x = ~`24-48 Hours`,
+    name = "24-48 Hours",
+    marker = list(color = "blue")
+  ) %>%
+  plotly::add_trace(
+    x = ~`>48 Hours`,
+    name = ">48 Hours",
+    marker = list(color = "red")
+  ) %>%
+  plotly::layout(
+    yaxis = ad,
+    xaxis = list(title = "Counts by Timeliness Category"),
+    barmode = "stack"
+  )
+```
+
+## Facility ED Visit Percentage by NSSP Timeliness Category
+
+```{r bigplot2, echo=FALSE,warning=FALSE,message=FALSE, fig.height=16,fig.width=12}
+lagtable <- table(lag$Facility_Name, lag$TimelinessCategory)
+FacilityLag <- data.frame(prop.table(lagtable, margin = 1))
+
+colnames(FacilityLag) <- c("Facility Name", "Timeliness Category", "Percent")
+
+FacilityLag <- FacilityLag %>%
+  mutate(Percent = round(Percent, 3))
+
+FacLag <- data.frame(FacilityLag %>%
+  pivot_wider(
+    names_from = `Timeliness Category`,
+    values_from = Percent
+  ), stringsAsFactors = F)
+
+colnames(FacLag) <- c("Facility Name", "<24 Hours", "24-48 Hours", ">48 Hours")
+
+FacLag$`Facility Name` <- factor(FacLag$`Facility Name`, levels = unique(FacLag$`Facility Name`)[order(FacLag$`Facility Name`, decreasing = TRUE)])
+
+plotly::plot_ly(FacLag,
+  y = ~`Facility Name`,
+  x = ~`<24 Hours`,
+  type = "bar",
+  name = "<24 Hours",
+  marker = list(color = "green")
+) %>%
+  plotly::add_trace(
+    x = ~`24-48 Hours`,
+    name = "24-48 Hours",
+    marker = list(color = "blue")
+  ) %>%
+  plotly::add_trace(
+    x = ~`>48 Hours`,
+    name = ">48 Hours",
+    marker = list(color = "red")
+  ) %>%
+  plotly::layout(
+    yaxis = ad,
+    xaxis = list(title = "ED Visit Percentage by Timeliness Category"),
+    barmode = "stack"
+  )
+```
+
+## First Message Timeliness
+
+The following table details mean (average) and median first message lag/delay times for patient encounters on or after `r start_date_lab` through `r end_date_lab` for currently active MN emergency facilities (with a 24 hour grace period).
+
+Again, "lag" refers to the amount of time it takes each facility (on average) to process, batch, and send the HL7 message(s) containing encounter data for each ER patient encounter, starting from the date and time of the patient encounter.
+
+```{r meanlag, echo=FALSE, message=FALSE, warning=FALSE}
+lagsummary <- lag %>%
+  dplyr::select(Facility_Name, C_Biosense_Facility_ID, lag) %>%
+  group_by(Facility_Name, C_Biosense_Facility_ID) %>%
+  dplyr::summarise(
+    messagelagavg = round(mean(lag, na.rm = TRUE), 2),
+    messagelagmedian = round(median(lag, na.rm = TRUE), 2)
+  ) %>%
+  ungroup()
+
+lagsummary %>%
+  datatable(
+    extensions = "Buttons",
+    colnames = c("Facility Name", "C_Biosense_Facility_ID", "Mean 1st Message Lag", "Median 1st Message Lag"),
+    options = list(
+      dom = "Bfrtip",
+      buttons = c("copy", "csv", "excel", "pdf", "print"),
+      pageLength = 15,
+      autoWidth = TRUE,
+      scrollY = T,
+      order = list(3, "desc")
+    ),
+    rownames = FALSE,
+    caption = htmltools::tags$caption(style = "caption-side: top; text-align: center; color:black; font-size:125% ;", "First Message Timeliness")
+  ) %>%
+  formatStyle("messagelagmedian", color = styleInterval(c(24, 48), c("green", "blue", "red"))) %>%
+  formatStyle("messagelagavg", color = styleInterval(c(24, 48), c("green", "blue", "red")))
+```
+
+## Chief Complaint (CC) Timeliness
+
+According to NSSP, emergency department chief complaint and diagnosis code information should also be received by NSSP within 24 hours of each patient encounter (and not more than 48 hours after). 
+
+The following table details the average and median **chief complaint** delay per patient encounter by MN facility before NSSP receives a message with a non-null chief complaint field. These values are calculated per patient encounter, by comparing the C_Visit_Date_Time (date and time of the patient encounter) to the Arrived_Date_Time (NSSP arrival time stamp) of the first HL7 message per patient encounter with a non-null **chief complaint** field for that patient encounter. 
+
+Reported values represent the aggregate mean and median delay per patient encounter by facility, for patient encounters from `r start_date_lab` through `r end_date_lab`, with a 24 hour grace period.
+
+```{r CC_time, echo=FALSE, message=FALSE, warning=FALSE}
+# Calculate lag for the first message with a non-null chief complaint field by facility
+CClag <- ED.messages %>%
+  dplyr::select(Facility_Name, C_Biosense_ID, C_Biosense_Facility_ID, Arrived_Date_Time, C_Visit_Date_Time, C_Chief_Complaint) %>%
+  filter(!is.na(C_Chief_Complaint)) %>%
+  group_by(C_Biosense_ID) %>%
+  slice(which.min(Arrived_Date_Time)) %>%
+  slice(1) %>%
+  mutate(lag = as.numeric(difftime(Arrived_Date_Time, C_Visit_Date_Time, units = "hours"))) %>%
+  ungroup() %>%
+  group_by(Facility_Name, C_Biosense_Facility_ID) %>%
+  dplyr::summarise(
+    CClagavg = round(mean(lag, na.rm = TRUE), 2),
+    CClagmedian = round(median(lag, na.rm = TRUE), 2)
+  ) %>%
+  ungroup()
+
+facilities.for.join <- lag %>%
+  dplyr::select(Facility_Name, C_Biosense_Facility_ID) %>%
+  distinct()
+
+CCmiss <- dplyr::anti_join(facilities.for.join, CClag, by = c("Facility_Name" = "Facility_Name", "C_Biosense_Facility_ID" = "C_Biosense_Facility_ID"))
+
+CClag %>%
+  datatable(
+    extensions = "Buttons", filter = "top",
+    colnames = c("Facility Name", "C_Biosense_Facility_ID", "Mean Delay to 1st Non-Null CC", "Median Delay to 1st Non-Null CC"),
+    options = list(
+      dom = "Bfrtip",
+      buttons = c("copy", "csv", "excel", "pdf", "print"),
+      pageLength = 15,
+      autoWidth = TRUE,
+      scrollY = T,
+      order = list(3, "desc")
+    ),
+    rownames = FALSE,
+    caption = htmltools::tags$caption(style = "caption-side: top; text-align: center; color:black; font-size:125% ;", "Chief Complaint Timeliness")
+  ) %>%
+  formatStyle("CClagavg", color = styleInterval(c(24, 48), c("green", "blue", "red"))) %>%
+  formatStyle("CClagmedian", color = styleInterval(c(24, 48), c("green", "blue", "red")))
+```
+
+## Diagnosis Code Timeliness
+
+The following table details the average and median **diagnosis code** delay per patient encounter by MN facility before NSSP receives a message with a non-null diagnosis code field. These values are calculated per patient encounter, by comparing the C_Visit_Date_Time (date and time of the patient encounter) to the Arrived_Date_Time (NSSP arrival time stamp) of the first HL7 message per patient encounter with a non-null **diagnosis code** field for that patient encounter.  
+
+Reported values represent the aggregate mean and median diagnosis code time delay per patient encounter by facility, for patient encounters from `r start_date_lab` through `r end_date_lab`, with a 24 hour grace period.
+
+```{r DD_time, echo=FALSE, message=FALSE, warning=FALSE}
+# Calculate lag for first message with a non-null diagnosis code by facility
+DXlag <- ED.messages %>%
+  dplyr::select(Facility_Name, C_Biosense_ID, C_Biosense_Facility_ID, Arrived_Date_Time, C_Visit_Date_Time, Diagnosis_Code) %>%
+  filter(!is.na(Diagnosis_Code)) %>%
+  group_by(C_Biosense_ID) %>%
+  slice(which.min(Arrived_Date_Time)) %>%
+  slice(1) %>%
+  ungroup() %>%
+  mutate(lag = as.numeric(difftime(Arrived_Date_Time, C_Visit_Date_Time, units = "hours"))) %>%
+  group_by(Facility_Name, C_Biosense_Facility_ID) %>%
+  dplyr::summarise(
+    DXlagavg = round(mean(lag, na.rm = TRUE), 2),
+    DXlagmedian = round(median(lag, na.rm = TRUE), 2)
+  ) %>%
+  ungroup()
+
+DXmiss <- dplyr::anti_join(facilities.for.join, DXlag, by = c("Facility_Name" = "Facility_Name", "C_Biosense_Facility_ID" = "C_Biosense_Facility_ID"))
+
+DXlag %>%
+  datatable(
+    extensions = "Buttons",
+    filter = "top",
+    colnames = c("Facility Name", "C_Biosense_Facility_ID", "Mean Delay to 1st Non-Null DX", "Median Delay to 1st Non-Null DX"),
+    options = list(
+      dom = "Bfrtip",
+      buttons = c("copy", "csv", "excel", "pdf", "print"),
+      pageLength = 15,
+      autoWidth = TRUE,
+      scrollY = T,
+      order = list(3, "desc")
+    ),
+    rownames = FALSE,
+    caption = htmltools::tags$caption(style = "caption-side: top; text-align: center; color:black; font-size:125% ;", "Diagnosis Code Timeliness")
+  ) %>%
+  formatStyle("DXlagavg", color = styleInterval(c(24, 48), c("green", "blue", "red"))) %>%
+  formatStyle("DXlagmedian", color = styleInterval(c(24, 48), c("green", "blue", "red")))
+```
+
+
+```{r completeness_metrics_Analysis, echo=FALSE, warning=FALSE, message=FALSE, fig.align='center', fig.height= 11, fig.width= 10}
+element1.summary <- ED.messages %>%
+  dplyr::group_by(C_Biosense_ID) %>%
+  dplyr::mutate(
+    Date = as.Date(C_Visit_Date),
+    FTstatus = case_when(
+      any(!is.na(Facility_Type_Code)) ~ "complete",
+      all(is.na(Facility_Type_Code)) ~ "null"
+    ),
+    SFIDstatus = case_when(
+      any(!is.na(Sending_Facility_ID)) ~ "complete",
+      all(is.na(Sending_Facility_ID)) ~ "null"
+    ),
+    TFIDstatus = case_when(
+      any(!is.na(Treating_Facility_ID)) ~ "complete",
+      all(is.na(Treating_Facility_ID)) ~ "null"
+    ),
+    VIDstatus = case_when(
+      any(!is.na(Visit_ID)) ~ "complete",
+      all(is.na(Visit_ID)) ~ "null"
+    ),
+    CFTstatus = case_when(
+      any(!is.na(C_FacType_Patient_Class)) ~ "complete",
+      all(is.na(C_FacType_Patient_Class)) ~ "null"
+    ),
+    PCCstatus = case_when(
+      any(!is.na(Patient_Class_Code)) ~ "complete",
+      all(is.na(Patient_Class_Code)) ~ "null"
+    ),
+    ADTstatus = case_when(
+      any(!is.na(Admit_Date_Time)) ~ "complete",
+      all(is.na(Admit_Date_Time)) ~ "null"
+    ),
+    ARDstatus = case_when(
+      any(!is.na(Admit_Reason_Description)) ~ "complete",
+      all(is.na(Admit_Reason_Description)) ~ "null"
+    ),
+    CCstatus = case_when(
+      any(!is.na(C_Chief_Complaint)) ~ "complete",
+      all(is.na(C_Chief_Complaint)) ~ "null"
+    ),
+    CCtextstatus = case_when(
+      any(!is.na(Chief_Complaint_Text)) ~ "complete",
+      all(is.na(Chief_Complaint_Text)) ~ "null"
+    ),
+    CPatAgestatus = case_when(
+      any(!is.na(C_Patient_Age)) ~ "complete",
+      all(is.na(C_Patient_Age)) ~ "null"
+    ),
+    CPatAgeYrstatus = case_when(
+      any(!is.na(C_Patient_Age_Years)) ~ "complete",
+      all(is.na(C_Patient_Age_Years)) ~ "null"
+    ),
+    DXstatus = case_when(
+      any(!is.na(Diagnosis_Code)) ~ "complete",
+      all(is.na(Diagnosis_Code)) ~ "null"
+    ),
+    DDescstatus = case_when(
+      any(!is.na(Diagnosis_Description)) ~ "complete",
+      all(is.na(Diagnosis_Description)) ~ "null"
+    ),
+    PatZipstatus = case_when(
+      any(!is.na(Patient_Zip)) ~ "complete",
+      all(is.na(Patient_Zip)) ~ "null"
+    ),
+    ProcIDstatus = case_when(
+      any(!is.na(Processed_ID)) ~ "complete",
+      all(is.na(Processed_ID)) ~ "null"
+    ),
+    TrgEstatus = case_when(
+      any(!is.na(Trigger_Event)) ~ "complete",
+      all(is.na(Trigger_Event)) ~ "null"
+    )
+  ) %>%
+  slice(1) %>%
+  ungroup()
+
+element1.sum <- element1.summary %>%
+  group_by(Parent_Organization) %>%
+  summarise(
+    Total = sum(dplyr::n_distinct(C_Biosense_ID)),
+    FT.complete = sum(FTstatus == "complete"),
+    SFID.complete = sum(SFIDstatus == "complete"),
+    TFID.complete = sum(TFIDstatus == "complete"),
+    VID.complete = sum(VIDstatus == "complete"),
+    CFT.complete = sum(CFTstatus == "complete"),
+    PCC.complete = sum(PCCstatus == "complete"),
+    ADT.complete = sum(ADTstatus == "complete"),
+    ARD.complete = sum(ARDstatus == "complete"),
+    CC.complete = sum(CCstatus == "complete"),
+    CCtext.complete = sum(CCtextstatus == "complete"),
+    CPatAge.complete = sum(CPatAgestatus == "complete"),
+    CPatAgeYr.complete = sum(CPatAgeYrstatus == "complete"),
+    DX.complete = sum(DXstatus == "complete"),
+    DDesc.complete = sum(DDescstatus == "complete"),
+    PatZip.complete = sum(PatZipstatus == "complete"),
+    ProcID.complete = sum(ProcIDstatus == "complete"),
+    TrgE.complete = sum(TrgEstatus == "complete"),
+    FT.null = sum(FTstatus == "null"),
+    SFID.null = sum(SFIDstatus == "null"),
+    TFID.null = sum(TFIDstatus == "null"),
+    VID.null = sum(VIDstatus == "null"),
+    CFT.null = sum(CFTstatus == "null"),
+    PCC.null = sum(PCCstatus == "null"),
+    ADT.null = sum(ADTstatus == "null"),
+    ARD.null = sum(ARDstatus == "null"),
+    CC.null = sum(CCstatus == "null"),
+    CCtext.null = sum(CCtextstatus == "null"),
+    CPatAge.null = sum(CPatAgestatus == "null"),
+    CPatAgeYr.null = sum(CPatAgeYrstatus == "null"),
+    DX.null = sum(DXstatus == "null"),
+    DDesc.null = sum(DDescstatus == "null"),
+    PatZip.null = sum(PatZipstatus == "null"),
+    ProcID.null = sum(ProcIDstatus == "null"),
+    TrgE.null = sum(TrgEstatus == "null"),
+    FT.pct.complete = FT.complete / (FT.complete + FT.null) * 100,
+    SFID.pct.complete = SFID.complete / (SFID.complete + SFID.null) * 100,
+    TFID.pct.complete = TFID.complete / (TFID.complete + TFID.null) * 100,
+    VID.pct.complete = VID.complete / (VID.complete + VID.null) * 100,
+    CFT.pct.complete = CFT.complete / (CFT.complete + CFT.null) * 100,
+    PCC.pct.complete = PCC.complete / (PCC.complete + PCC.null) * 100,
+    ADT.pct.complete = ADT.complete / (ADT.complete + ADT.null) * 100,
+    ARD.pct.complete = ARD.complete / (ARD.complete + ARD.null) * 100,
+    CC.pct.complete = CC.complete / (CC.complete + CC.null) * 100,
+    CCtext.pct.complete = CCtext.complete / (CCtext.complete + CCtext.null) * 100,
+    CPatAge.pct.complete = CPatAge.complete / (CPatAge.complete + CPatAge.null) * 100,
+    CPatAgeYr.pct.complete = CC.complete / (CPatAge.complete + CPatAge.null) * 100,
+    DX.pct.complete = DX.complete / (DX.complete + DX.null) * 100,
+    DDesc.pct.complete = DDesc.complete / (DDesc.complete + DDesc.null) * 100,
+    PatZip.pct.complete = PatZip.complete / (PatZip.complete + PatZip.null) * 100,
+    ProcID.pct.complete = ProcID.complete / (ProcID.complete + ProcID.null) * 100,
+    TrgE.pct.complete = TrgE.complete / (TrgE.complete + TrgE.null) * 100
+  ) %>%
+  ungroup() %>%
+  mutate(
+    FT.pct.complete = round(FT.pct.complete, 2),
+    SFID.pct.complete = round(SFID.pct.complete, 2),
+    TFID.pct.complete = round(TFID.pct.complete, 2),
+    VID.pct.complete = round(VID.pct.complete, 2),
+    CFT.pct.complete = round(CFT.pct.complete, 2),
+    PCC.pct.complete = round(PCC.pct.complete, 2),
+    ADT.pct.complete = round(ADT.pct.complete, 2),
+    ARD.pct.complete = round(ARD.pct.complete, 2),
+    CC.pct.complete = round(CC.pct.complete, 2),
+    DX.pct.complete = round(DX.pct.complete, 2),
+    CCtext.pct.complete = round(CCtext.pct.complete, 2),
+    CPatAge.pct.complete = round(CPatAge.pct.complete, 2),
+    CPatAgeYr.pct.complete = round(CPatAgeYr.pct.complete, 2),
+    DDesc.pct.complete = round(DDesc.pct.complete, 2),
+    PatZip.pct.complete = round(PatZip.pct.complete, 2),
+    ProcID.pct.complete = round(ProcID.pct.complete, 2),
+    TrgE.pct.complete = round(TrgE.pct.complete, 2)
+  )
+
+element1.plot <- element1.sum %>%
+  dplyr::select(Parent_Organization, contains("pct.complete")) %>%
+  pivot_longer(cols = -Parent_Organization) %>%
+  dplyr::rename(
+    Metric = name,
+    Percent_Complete = value
+  )
+
+element1.plot <- element1.plot %>%
+  mutate(Percent_Complete = round(Percent_Complete, 2)) %>%
+  mutate(Metric = recode(Metric,
+    "FT.pct.complete" = "Facility_Type_Code",
+    "SFID.pct.complete" = "Sending_Facility_ID",
+    "TFID.pct.complete" = "Treating Facility ID",
+    "VID.pct.complete" = "Visit_ID",
+    "CFT.pct.complete" = "C_FacType_Patient_Class",
+    "PCC.pct.complete" = "Patient_Class_Code",
+    "ADT.pct.complete" = "Admit_Date_Time",
+    "ARD.pct.complete" = "Admit_Reason_Description",
+    "CC.pct.complete" = "C_Chief_Complaint",
+    "CCtext.pct.complete" = "Chief_Complaint_Text",
+    "CPatAge.pct.complete" = "C_Patient_Age",
+    "CPatAgeYr.pct.complete" = "C_Patient_Age_Years",
+    "DX.pct.complete" = "Diagnosis Code",
+    "DDesc.pct.complete" = "Diagnosis_Description",
+    "PatZip.pct.complete" = "Patient_Zip",
+    "ProcID.pct.complete" = "Processing_ID",
+    "TrgE.pct.complete" = "Trigger Event"
+  )) # %>%
+# dplyr::select(-Parent_Organization)
+
+element2.summary <- ED.messages %>%
+  dplyr::group_by(C_Biosense_ID) %>%
+  dplyr::mutate(
+    SendFacIDstatus = case_when(
+      any(!is.na(Sending_Facility_ID_Source)) ~ "complete",
+      all(is.na(Sending_Facility_ID_Source)) ~ "null"
+    ),
+    DDstatus = case_when(
+      any(!is.na(Discharge_Disposition)) ~ "complete",
+      all(is.na(Discharge_Disposition)) ~ "null"
+    ),
+    DischDTstatus = case_when(
+      any(!is.na(Discharge_Date_Time)) ~ "complete",
+      all(is.na(Discharge_Date_Time)) ~ "null"
+    ),
+    FstPtIDstatus = case_when(
+      any(!is.na(First_Patient_ID)) ~ "complete",
+      all(is.na(First_Patient_ID)) ~ "null"
+    ),
+    MRNstatus = case_when(
+      any(!is.na(Medical_Record_Number)) ~ "complete",
+      all(is.na(Medical_Record_Number)) ~ "null"
+    ),
+    RDTstatus = case_when(
+      any(!is.na(Recorded_Date_Time)) ~ "complete",
+      all(is.na(Recorded_Date_Time)) ~ "null"
+    ),
+    ARCstatus = case_when(
+      any(!is.na(Admit_Reason_Code)) ~ "complete",
+      all(is.na(Admit_Reason_Code)) ~ "null"
+    ),
+    CCcodestatus = case_when(
+      any(!is.na(Chief_Complaint_Code)) ~ "complete",
+      all(is.na(Chief_Complaint_Code)) ~ "null"
+    ),
+    DTstatus = case_when(
+      any(!is.na(Diagnosis_Type)) ~ "complete",
+      all(is.na(Diagnosis_Type)) ~ "null"
+    ),
+    AdmSexstatus = case_when(
+      any(!is.na(Administrative_Sex)) ~ "complete",
+      all(is.na(Administrative_Sex)) ~ "null"
+    ),
+    AgeRepstatus = case_when(
+      any(!is.na(Age_Reported)) ~ "complete",
+      all(is.na(Age_Reported)) ~ "null"
+    ),
+    AgeUnRepstatus = case_when(
+      any(!is.na(Age_Units_Reported)) ~ "complete",
+      all(is.na(Age_Units_Reported)) ~ "null"
+    ),
+    CPatAgeUnstatus = case_when(
+      any(!is.na(C_Patient_Age_Units)) ~ "complete",
+      all(is.na(C_Patient_Age_Units)) ~ "null"
+    ),
+    CPatCounstatus = case_when(
+      any(!is.na(C_Patient_County)) ~ "complete",
+      all(is.na(C_Patient_County)) ~ "null"
+    ),
+    EthCdstatus = case_when(
+      any(!is.na(Ethnicity_Code)) ~ "complete",
+      all(is.na(Ethnicity_Code)) ~ "null"
+    ),
+    EthDescstatus = case_when(
+      any(!is.na(Ethnicity_Description)) ~ "complete",
+      all(is.na(Ethnicity_Description)) ~ "null"
+    ),
+    PatCitstatus = case_when(
+      any(!is.na(Patient_City)) ~ "complete",
+      all(is.na(Patient_City)) ~ "null"
+    ),
+    PatCtrystatus = case_when(
+      any(!is.na(Patient_Country)) ~ "complete",
+      all(is.na(Patient_Country)) ~ "null"
+    ),
+    PatStstatus = case_when(
+      any(!is.na(Patient_State)) ~ "complete",
+      all(is.na(Patient_State)) ~ "null"
+    ),
+    RaceCdstatus = case_when(
+      any(!is.na(Race_Code)) ~ "complete",
+      all(is.na(Race_Code)) ~ "null"
+    ),
+    RaceDescstatus = case_when(
+      any(!is.na(Race_Description)) ~ "complete",
+      all(is.na(Race_Description)) ~ "null"
+    ),
+    VersIDstatus = case_when(
+      any(!is.na(Version_ID)) ~ "complete",
+      all(is.na(Version_ID)) ~ "null"
+    )
+  ) %>%
+  slice(1) %>%
+  ungroup()
+
+element2.sum <- element2.summary %>%
+  group_by(Parent_Organization) %>%
+  summarise(
+    SendFacID.complete = sum(SendFacIDstatus == "complete"),
+    DD.complete = sum(DDstatus == "complete"),
+    DischDT.complete = sum(DischDTstatus == "complete"),
+    FstPtID.complete = sum(FstPtIDstatus == "complete"),
+    MRN.complete = sum(MRNstatus == "complete"),
+    RDT.complete = sum(RDTstatus == "complete"),
+    ARC.complete = sum(ARCstatus == "complete"),
+    CCcode.complete = sum(CCcodestatus == "complete"),
+    DT.complete = sum(DTstatus == "complete"),
+    AdmSex.complete = sum(AdmSexstatus == "complete"),
+    AgeRep.complete = sum(AgeRepstatus == "complete"),
+    AgeUnRep.complete = sum(AgeUnRepstatus == "complete"),
+    CPatAgeUn.complete = sum(CPatAgeUnstatus == "complete"),
+    CPatCoun.complete = sum(CPatCounstatus == "complete"),
+    EthCd.complete = sum(EthCdstatus == "complete"),
+    EthDesc.complete = sum(EthDescstatus == "complete"),
+    PatCit.complete = sum(PatCitstatus == "complete"),
+    PatCtry.complete = sum(PatCtrystatus == "complete"),
+    PatSt.complete = sum(PatStstatus == "complete"),
+    RaceCd.complete = sum(RaceCdstatus == "complete"),
+    RaceDesc.complete = sum(RaceDescstatus == "complete"),
+    VersID.complete = sum(VersIDstatus == "complete"),
+    SendFacID.null = sum(SendFacIDstatus == "null"),
+    DD.null = sum(DDstatus == "null"),
+    DischDT.null = sum(DischDTstatus == "null"),
+    FstPtID.null = sum(FstPtIDstatus == "null"),
+    MRN.null = sum(MRNstatus == "null"),
+    RDT.null = sum(RDTstatus == "null"),
+    ARC.null = sum(ARCstatus == "null"),
+    CCcode.null = sum(CCcodestatus == "null"),
+    DT.null = sum(DTstatus == "null"),
+    AdmSex.null = sum(AdmSexstatus == "null"),
+    AgeRep.null = sum(AgeRepstatus == "null"),
+    AgeUnRep.null = sum(AgeUnRepstatus == "null"),
+    CPatAgeUn.null = sum(CPatAgeUnstatus == "null"),
+    CPatCoun.null = sum(CPatCounstatus == "null"),
+    EthCd.null = sum(EthCdstatus == "null"),
+    EthDesc.null = sum(EthDescstatus == "null"),
+    PatCit.null = sum(PatCitstatus == "null"),
+    PatCtry.null = sum(PatCtrystatus == "null"),
+    PatSt.null = sum(PatStstatus == "null"),
+    RaceCd.null = sum(RaceCdstatus == "null"),
+    RaceDesc.null = sum(RaceDescstatus == "null"),
+    VersID.null = sum(VersIDstatus == "null"),
+    SendFacID.pct.complete = SendFacID.complete / (SendFacID.complete + SendFacID.null) * 100,
+    DD.pct.complete = DD.complete / (DD.complete + DD.null) * 100,
+    DischDT.pct.complete = DischDT.complete / (DischDT.complete + DischDT.null) * 100,
+    FstPtID.pct.complete = FstPtID.complete / (FstPtID.complete + FstPtID.null) * 100,
+    MRN.pct.complete = MRN.complete / (MRN.complete + MRN.null) * 100,
+    RDT.pct.complete = RDT.complete / (RDT.complete + RDT.null) * 100,
+    ARC.pct.complete = ARC.complete / (ARC.complete + ARC.null) * 100,
+    CCcode.pct.complete = CCcode.complete / (CCcode.complete + CCcode.null) * 100,
+    DT.pct.complete = DT.complete / (DT.complete + DT.null) * 100,
+    AdmSex.pct.complete = AdmSex.complete / (AdmSex.complete + AdmSex.null) * 100,
+    AgeRep.pct.complete = AgeRep.complete / (AgeRep.complete + AgeRep.null) * 100,
+    AgeUnRep.pct.complete = AgeUnRep.complete / (AgeUnRep.complete + AgeUnRep.null) * 100,
+    CPatAgeUn.pct.complete = CPatAgeUn.complete / (CPatAgeUn.complete + CPatAgeUn.null) * 100,
+    CPatCoun.pct.complete = CPatCoun.complete / (CPatCoun.complete + CPatCoun.null) * 100,
+    EthCd.pct.complete = EthCd.complete / (EthCd.complete + EthCd.null) * 100,
+    EthDesc.pct.complete = EthDesc.complete / (EthDesc.complete + EthDesc.null) * 100,
+    PatCit.pct.complete = PatCit.complete / (PatCit.complete + PatCit.null) * 100,
+    PatCtry.pct.complete = PatCtry.complete / (PatCtry.complete + PatCtry.null) * 100,
+    PatSt.pct.complete = PatSt.complete / (PatSt.complete + PatSt.null) * 100,
+    RaceCd.pct.complete = RaceCd.complete / (RaceCd.complete + RaceCd.null) * 100,
+    RaceDesc.pct.complete = RaceDesc.complete / (RaceDesc.complete + RaceDesc.null) * 100,
+    VersID.pct.complete = VersID.complete / (VersID.complete + VersID.null) * 100
+  ) %>%
+  ungroup() %>%
+  mutate(
+    SendFacID.pct.complete = round(SendFacID.pct.complete, 2),
+    DD.pct.complete = round(DD.pct.complete, 2),
+    DischDT.pct.complete = round(DischDT.pct.complete, 2),
+    FstPtID.pct.complete = round(FstPtID.pct.complete, 2),
+    MRN.pct.complete = round(MRN.pct.complete, 2),
+    RDT.pct.complete = round(RDT.pct.complete, 2),
+    ARC.pct.complete = round(ARC.pct.complete, 2),
+    CCcode.pct.complete = round(CCcode.pct.complete, 2),
+    DT.pct.complete = round(DT.pct.complete, 2),
+    AdmSex.pct.complete = round(AdmSex.pct.complete, 2),
+    AgeRep.pct.complete = round(AgeRep.pct.complete, 2),
+    AgeUnRep.pct.complete = round(AgeUnRep.pct.complete, 2),
+    CPatAgeUn.pct.complete = round(CPatAgeUn.pct.complete, 2),
+    CPatCoun.pct.complete = round(CPatCoun.pct.complete, 2),
+    EthCd.pct.complete = round(EthCd.pct.complete, 2),
+    EthDesc.pct.complete = round(EthDesc.pct.complete, 2),
+    PatCit.pct.complete = round(PatCit.pct.complete, 2),
+    PatCtry.pct.complete = round(PatCtry.pct.complete, 2),
+    PatSt.pct.complete = round(PatSt.pct.complete, 2),
+    RaceCd.pct.complete = round(RaceCd.pct.complete, 2),
+    RaceDesc.pct.complete = round(RaceDesc.pct.complete, 2),
+    VersID.pct.complete = round(VersID.pct.complete, 2)
+  )
+
+element2.plot <- element2.sum %>%
+  dplyr::select(Parent_Organization, contains("pct.complete")) %>%
+  pivot_longer(cols = -Parent_Organization) %>%
+  dplyr::rename(
+    Metric = name,
+    Percent_Complete = value
+  )
+
+element2.plot <- element2.plot %>%
+  mutate(Percent_Complete = round(Percent_Complete, 2)) %>%
+  mutate(Metric = recode(Metric,
+    "SendFacID.pct.complete" = "Sending_Facility_ID_Source",
+    "DD.pct.complete" = "Discharge_Disposition",
+    "DischDT.pct.complete" = "Discharge_Date_Time",
+    "FstPtID.pct.complete" = "First_Patient_ID",
+    "MRN.pct.complete" = "Medical_Record_Number",
+    "RDT.pct.complete" = "Recorded_Date_Time",
+    "ARC.pct.complete" = "Admit_Reason_Code",
+    "CCcode.pct.complete" = "Chief_Complaint_Code",
+    "DT.pct.complete" = "Diagnosis_Type",
+    "AdmSex.pct.complete" = "Administrative_Sex",
+    "AgeRep.pct.complete" = "Age_Reported",
+    "AgeUnRep.pct.complete" = "Age_Units_Reported",
+    "CPatAgeUn.pct.complete" = "C_Patient_Age_Units",
+    "CPatCoun.pct.complete" = "C_Patient_County",
+    "PatCtry.pct.complete" = "Patient_Country",
+    "EthCd.pct.complete" = "Ethnicity_Code",
+    "EthDesc.pct.complete" = "Ethnicity_Description",
+    "PatCit.pct.complete" = "Patient_City",
+    "PatSt.pct.complete" = "Patient_State",
+    "RaceCd.pct.complete" = "Race_Code",
+    "RaceDesc.pct.complete" = "Race_Description",
+    "VersID.pct.complete" = "Version_ID"
+  )) # %>%
+# dplyr::select(-Parent_Organization)
+
+
+element3.summary <- ED.messages %>%
+  dplyr::group_by(C_Biosense_ID) %>%
+  dplyr::mutate(
+    BDTstatus = case_when(
+      any(!is.na(Birth_Date_time)) ~ "complete",
+      all(is.na(Birth_Date_time)) ~ "null"
+    ),
+    DDTstatus = case_when(
+      any(!is.na(Diagnosis_Date_Time)) ~ "complete",
+      all(is.na(Diagnosis_Date_Time)) ~ "null"
+    ),
+    PDTstatus = case_when(
+      any(!is.na(Procedure_Date_Time)) ~ "complete",
+      all(is.na(Procedure_Date_Time)) ~ "null"
+    ),
+    PCstatus = case_when(
+      any(!is.na(Procedure_Code)) ~ "complete",
+      all(is.na(Procedure_Code)) ~ "null"
+    ),
+    PDstatus = case_when(
+      any(!is.na(Procedure_Description)) ~ "complete",
+      all(is.na(Procedure_Description)) ~ "null"
+    ),
+    PDIstatus = case_when(
+      any(!is.na(Patient_Death_Indicator)) ~ "complete",
+      all(is.na(Patient_Death_Indicator)) ~ "null"
+    ),
+    DDT = case_when(
+      any(!is.na(Death_Date_Time)) ~ "complete",
+      all(is.na(Death_Date_Time)) ~ "null"
+    ),
+    ATstatus = case_when(
+      any(!is.na(Admission_Type)) ~ "complete",
+      all(is.na(Admission_Type)) ~ "null"
+    ),
+    Astatus = case_when(
+      any(!is.na(Ambulatory_Status)) ~ "complete",
+      all(is.na(Ambulatory_Status)) ~ "null"
+    ),
+    Hstatus = case_when(
+      any(!is.na(Height)) ~ "complete",
+      all(is.na(Height)) ~ "null"
+    ),
+    HUstatus = case_when(
+      any(!is.na(Height_Units)) ~ "complete",
+      all(is.na(Height_Units)) ~ "null"
+    ),
+    Wstatus = case_when(
+      any(!is.na(Weight)) ~ "complete",
+      all(is.na(Weight)) ~ "null"
+    ),
+    WUstatus = case_when(
+      any(!is.na(Weight_Units)) ~ "complete",
+      all(is.na(Weight_Units)) ~ "null"
+    ),
+    ICstatus = case_when(
+      any(!is.na(Insurance_Coverage)) ~ "complete",
+      all(is.na(Insurance_Coverage)) ~ "null"
+    ),
+    ARstatus = case_when(
+      any(!is.na(Age_Reported)) ~ "complete",
+      all(is.na(Age_Reported)) ~ "null"
+    ),
+    TNstatus = case_when(
+      any(!is.na(Triage_Notes)) ~ "complete",
+      all(is.na(Triage_Notes)) ~ "null"
+    ),
+    IACstatus = case_when(
+      any(!is.na(Initial_Acuity_Code)) ~ "complete",
+      all(is.na(Initial_Acuity_Code)) ~ "null"
+    ),
+    IADstatus = case_when(
+      any(!is.na(Initial_Acuity_Description)) ~ "complete",
+      all(is.na(Initial_Acuity_Description)) ~ "null"
+    ),
+    PSCstatus = case_when(
+      any(!is.na(Pregnancy_Status_Code)) ~ "complete",
+      all(is.na(Pregnancy_Status_Code)) ~ "null"
+    ),
+    PSDstatus = case_when(
+      any(!is.na(Pregnancy_Status_Description)) ~ "complete",
+      all(is.na(Pregnancy_Status_Description)) ~ "null"
+    ),
+    SSCstatus = case_when(
+      any(!is.na(Smoking_Status_Code)) ~ "complete",
+      all(is.na(Smoking_Status_Code)) ~ "null"
+    ),
+    SSDstatus = case_when(
+      any(!is.na(Smoking_Status_Description)) ~ "complete",
+      all(is.na(Smoking_Status_Description)) ~ "null"
+    )
+  ) %>%
+  slice(1) %>%
+  ungroup()
+
+element3.sum <- element3.summary %>%
+  group_by(Parent_Organization) %>%
+  summarise(
+    BDT.complete = sum(BDTstatus == "complete"),
+    DDT.complete = sum(DDTstatus == "complete"),
+    PDT.complete = sum(PDTstatus == "complete"),
+    PC.complete = sum(PCstatus == "complete"),
+    PD.complete = sum(PDstatus == "complete"),
+    PDI.complete = sum(PDIstatus == "complete"),
+    DDT.complete = sum(DDTstatus == "complete"),
+    AT.complete = sum(ATstatus == "complete"),
+    A.complete = sum(Astatus == "complete"),
+    HU.complete = sum(HUstatus == "complete"),
+    H.complete = sum(Hstatus == "complete"),
+    W.complete = sum(Wstatus == "complete"),
+    WU.complete = sum(WUstatus == "complete"),
+    IC.complete = sum(ICstatus == "complete"),
+    AR.complete = sum(ARstatus == "complete"),
+    TN.complete = sum(TNstatus == "complete"),
+    IAC.complete = sum(IACstatus == "complete"),
+    IAD.complete = sum(IADstatus == "complete"),
+    PSC.complete = sum(PSCstatus == "complete"),
+    PSD.complete = sum(PSDstatus == "complete"),
+    SSC.complete = sum(SSCstatus == "complete"),
+    SSD.complete = sum(SSDstatus == "complete"),
+    BDT.null = sum(BDTstatus == "null"),
+    DDT.null = sum(DDTstatus == "null"),
+    PDT.null = sum(PDTstatus == "null"),
+    PC.null = sum(PCstatus == "null"),
+    PD.null = sum(PDstatus == "null"),
+    PDI.null = sum(PDIstatus == "null"),
+    DDT.null = sum(DDTstatus == "null"),
+    AT.null = sum(ATstatus == "null"),
+    A.null = sum(Astatus == "null"),
+    H.null = sum(Hstatus == "null"),
+    HU.null = sum(HUstatus == "null"),
+    W.null = sum(Wstatus == "null"),
+    WU.null = sum(WUstatus == "null"),
+    IC.null = sum(ICstatus == "null"),
+    AR.null = sum(ARstatus == "null"),
+    TN.null = sum(TNstatus == "null"),
+    IAC.null = sum(IACstatus == "null"),
+    IAD.null = sum(IADstatus == "null"),
+    PSC.null = sum(PSCstatus == "null"),
+    PSD.null = sum(PSDstatus == "null"),
+    SSC.null = sum(SSCstatus == "null"),
+    SSD.null = sum(SSDstatus == "null"),
+    BDT.pct.complete = BDT.complete / (BDT.complete + BDT.null) * 100,
+    DDT.pct.complete = DDT.complete / (DDT.complete + DDT.null) * 100,
+    PDT.pct.complete = PDT.complete / (PDT.complete + PDT.null) * 100,
+    PC.pct.complete = PC.complete / (PC.complete + PC.null) * 100,
+    PD.pct.complete = PD.complete / (PD.complete + PD.null) * 100,
+    PDI.pct.complete = PDI.complete / (PDI.complete + PDI.null) * 100,
+    DDT.pct.complete = DDT.complete / (DDT.complete + DDT.null) * 100,
+    AT.pct.complete = AT.complete / (AT.complete + AT.null) * 100,
+    A.pct.complete = A.complete / (A.complete + A.null) * 100,
+    H.pct.complete = H.complete / (H.complete + H.null) * 100,
+    HU.pct.complete = HU.complete / (HU.complete + HU.null) * 100,
+    W.pct.complete = W.complete / (W.complete + W.null) * 100,
+    WU.pct.complete = WU.complete / (WU.complete + WU.null) * 100,
+    IC.pct.complete = IC.complete / (IC.complete + IC.null) * 100,
+    AR.pct.complete = AR.complete / (AR.complete + AR.null) * 100,
+    TN.pct.complete = TN.complete / (TN.complete + TN.null) * 100,
+    IAC.pct.complete = IAC.complete / (IAC.complete + IAC.null) * 100,
+    IAD.pct.complete = IAD.complete / (IAD.complete + IAD.null) * 100,
+    PSC.pct.complete = PSC.complete / (PSC.complete + PSC.null) * 100,
+    PSD.pct.complete = PSD.complete / (PSD.complete + PSD.null) * 100,
+    SSC.pct.complete = SSC.complete / (SSC.complete + SSC.null) * 100,
+    SSD.pct.complete = SSD.complete / (SSD.complete + SSD.null) * 100
+  ) %>%
+  ungroup() %>%
+  mutate(
+    BDT.pct.complete = round(BDT.pct.complete, 2),
+    DDT.pct.complete = round(DDT.pct.complete, 2),
+    PDT.pct.complete = round(PDT.pct.complete, 2),
+    PC.pct.complete = round(PC.pct.complete, 2),
+    PD.pct.complete = round(PD.pct.complete, 2),
+    PDI.pct.complete = round(PDI.pct.complete, 2),
+    DDT.pct.complete = round(DDT.pct.complete, 2),
+    AT.pct.complete = round(AT.pct.complete, 2),
+    A.pct.complete = round(A.pct.complete, 2),
+    H.pct.complete = round(H.pct.complete, 2),
+    HU.pct.complete = round(HU.pct.complete, 2),
+    W.pct.complete = round(W.pct.complete, 2),
+    WU.pct.complete = round(WU.pct.complete, 2),
+    IC.pct.complete = round(IC.pct.complete, 2),
+    AR.pct.complete = round(AR.pct.complete, 2),
+    TN.pct.complete = round(TN.pct.complete, 2),
+    IAC.pct.complete = round(IAC.pct.complete, 2),
+    IAD.pct.complete = round(IAD.pct.complete, 2),
+    PSC.pct.complete = round(PSC.pct.complete, 2),
+    PSD.pct.complete = round(PSD.pct.complete, 2),
+    SSC.pct.complete = round(SSC.pct.complete, 2),
+    SSD.pct.complete = round(SSD.pct.complete, 2)
+  )
+
+
+element3.plot <- element3.sum %>%
+  dplyr::select(Parent_Organization, contains("pct.complete")) %>%
+  pivot_longer(cols = -Parent_Organization) %>%
+  dplyr::rename(
+    Metric = name,
+    Percent_Complete = value
+  )
+
+element3.plot <- element3.plot %>%
+  mutate(Percent_Complete = round(Percent_Complete, 2)) %>%
+  mutate(Metric = recode(Metric,
+    "BDT.pct.complete" = "Birth_Date_time",
+    "DDT.pct.complete" = "Diagnosis_Date_Time",
+    "PDT.pct.complete" = "Procedure_Date_Time",
+    "PC.pct.complete" = "Procedure_Code",
+    "PD.pct.complete" = "Procedure_Description",
+    "PDI.pct.complete" = "Patient_Death_Indicator",
+    "DDT.pct.complete" = "Death_Date_Time",
+    "AT.pct.complete" = "Admission_Type",
+    "A.pct.complete" = "Ambulatory_Status",
+    "H.pct.complete" = "Height",
+    "HU.pct.complete" = "Height_Units",
+    "W.pct.complete" = "Weight",
+    "WU.pct.complete" = "Weight_Units",
+    "IC.pct.complete" = "Insurance_Coverage",
+    "AR.pct.complete" = "Age_Reported",
+    "TN.pct.complete" = "Triage_Notes",
+    "IAC.pct.complete" = "Initial_Acuity_Code",
+    "IAD.pct.complete" = "Initial_Acuity_Description",
+    "PSC.pct.complete" = "Pregnancy_Status_Code",
+    "PSD.pct.complete" = "Pregnancy_Status_Description",
+    "SSC.pct.complete" = "Smoking_Status_Code",
+    "SSD.pct.complete" = "Smoking_Status_Description"
+  ))
+```
+
+# Completeness {.tabset .tabset-fade .tabset-pills}
+
+## BioSense Platform NSSP Priority 1 Data Field Completeness
+
+The plots below display MN's site-wide Priority 1 data completeness metrics for ED visits as defined by NSSP.
+
+NSSP requires 90% completeness for these Priority 1 across each patient encounter. In other words, at least 90% of ED visits should have at least one message where each required element is not null to ensure useful and timely syndromic surveillance data.
+
+
+```{r metrics_Analysis_plot_1, echo=FALSE,warning=FALSE,message=FALSE,fig.align='center',fig.width=10,fig.height=10}
+
+# plot <- list()
+# for (data in list(list(element1.plot, "Priority 1 Elements"), list(element2.plot, "Priority 2 Elements") , list(element3.plot, "Priority 3 Elements"))) {
+#  plot[[data[[2]]]] <- datatable(data[[1]], filter = "top",
+#           options = list(iDisplayLength = +10,
+#                          lengthMenu = list(c(10, 100, -1), c('10', '100', 'All'))
+#                          )) %>%
+#   formatStyle(
+#     'Percent_Complete',
+#     #background = styleColorBar(c(90,100), '#003865', angle = 270),
+#     backgroundSize = '70%',
+#     backgroundRepeat = 'no-repeat',
+#     backgroundPosition = 'center',
+#     textAlign = 'left',
+#     color = styleInterval(89, c('#B22222', '#003865'))
+#     )
+#   #%>%
+#   #   formatStyle(
+#   #   'Percent_Complete',
+#   #   background = styleColorBar(c(0,89), 'red', angle = 270),
+#   #   backgroundSize = '70%',
+#   #   backgroundRepeat = 'no-repeat',
+#   #   backgroundPosition = 'center',
+#   #   textAlign = 'left'
+#   # )
+# }
+# plot[[1]]
+
+plot <- list()
+for (data in list(list(element1.plot, "Priority 1 Elements"), list(element2.plot, "Priority 2 Elements") , list(element3.plot, "Priority 3 Elements"))) {
+  
+  temp_data <- data[[1]] %>%
+    mutate(Percent_Complete = Percent_Complete / 100) %>%
+    mutate(
+      color_pal = if_else(Percent_Complete < 0.90, "#DC3220", "#003865"),
+      row = row_number()
+    ) %>%
+    relocate(row)
+  
+  plot[[data[[2]]]] <- reactable(
+    theme = fivethirtyeight(),
+    temp_data,
+    columns = list(
+      row = colDef(
+        name = "", 
+        align = "left",
+        minWidth = 20
+      ),
+      Parent_Organization = colDef(
+        name = "Parent Organization",
+        align = "left",
+        filterable = TRUE,
+        sortable = TRUE
+      ),
+      Metric = colDef(
+        name = "Metric",
+        align = "left",
+        filterable = TRUE,
+        sortable = TRUE
+      ),
+      Percent_Complete = colDef(
+        name = "Percent Complete",
+        cell = data_bars(
+          temp_data,
+          fill_color_ref = "color_pal",
+          background = "#A6A6A6",
+          text_position = "inside-base",
+          max_value = 1,
+          number_fmt = scales::percent
+        ),
+        sortable = TRUE
+      ),
+      color_pal = colDef(show = FALSE)
+    )
+  )
+
+}
+plot[[1]]
+
+```
+
+## BioSense Platform NSSP Priority 2 Data Field Completeness
+
+The plots below display MN's site-wide Priority 2 data completeness metrics for ED visits as defined by NSSP.
+
+NSSP requires 90% completeness for these Priority 2 across each patient encounter. In other words, at least 90% of ED visits should have at least one message where each required element is not null to ensure useful and timely syndromic surveillance data.
+
+
+```{r metrics_Analysis_plot_2, echo=FALSE,warning=FALSE,message=FALSE,fig.align='center',fig.width=10,fig.height=90}
+
+plot[[2]]
+```
+
+## BioSense Platform NSSP Priority 3 Data Field Completeness
+
+The plots below display MN's site-wide Priority 3 data completeness metrics for ED visits as defined by NSSP.
+
+NSSP requires 90% completeness for these Priority 3 across each patient encounter. In other words, at least 90% of ED visits should have at least one message where each required element is not null to ensure useful and timely syndromic surveillance data.
+
+
+```{r metrics_Analysis_plot_3, echo=FALSE,warning=FALSE,message=FALSE,fig.align='center',fig.width=10,fig.height=90}
+
+plot[[3]]
+```
+
+## ESSENCE Chief Complaint and Discharge Diagnosis Completeness (Site-wide)
+
+The plots below display MN's overall chief complaint completeness and diagnosis code completeness calculated from applicable ESSENCE patient encounters. These values have been pulled using the CCAvailable and DDAvailable fields in the ESSENCE API.[^7]
+
+[^7]: [ESSENCE Data Quality Filters] (https://www.cdc.gov/nssp/dqc/articles/essence-data-quality-filter.html)
+
+- The CCAvailable field measures completeness of the 'chiefcomplaintparsed' (the CC of the CCDD) element at the ESSENCE patient encounter level (the presence of any value). 
+
+- The DDAvailable field measures completeness of the 'discharge_diagnosis' (the DD of the CCDD) at the ESSENCE patient encounter level (the presence of any value). The 'discharge_diagnosis' field (should) contain ICD-10-CM diagnosis code value(s), like the Diagnosis_Code field in the MN_Processed_Table.
+
+Note: the Discharge_Diagnosis field in ESSENCE is equivalent to the Diagnosis_Code field in the MN_PR_Processed table in the BioSense platform.
+
+```{r ccddavail, echo=FALSE, warning=FALSE, message=FALSE, fig.align='center', fig.width=10}
+
+dt_rnge <- paste(format(min(cc.available$date), "%B %d, %Y,"), "to", format(max(cc.available$date), "%B %d, %Y"))
+
+cc_available <- ggplot(cc.available) +
+  geom_line(aes(date, count, color = "CCAvailable = 1")) +
+  geom_point(aes(date, count, color = "CCAvailable = 1"), size = 1.5) +
+  labs(
+    x = "Date",
+    y = "Percent of ED Visits",
+    title = "Chief Complaint Available (Percent)"
+  ) +
+  scale_x_date(date_labels = "%b %d", expand = c(0, 0.1)) +
+  scale_y_continuous(breaks = pretty_breaks(8)) +
+  scale_color_manual(values = c("CCAvailable = 1" = "Blue")) +
+  expand_limits(y = 0) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_blank(),
+    legend.position = "bottom"
+  )
+
+dd_available <- ggplot(dd.available) +
+  geom_line(aes(date, count, color = "DDAvailable = 1")) +
+  geom_point(aes(date, count, color = "DDAvailable = 1"), size = 1.5) +
+  labs(
+    x = "Date",
+    y = "Percent of ED Visits",
+    title = "Discharge Diagnosis Available (Percent)"
+  ) +
+  scale_x_date(date_labels = "%b %d", expand = c(0, 0.1)) +
+  scale_y_continuous(breaks = pretty_breaks(8)) +
+  scale_color_manual(values = c("DDAvailable = 1" = "Red")) +
+  expand_limits(y = 0) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_blank(),
+    legend.position = "bottom"
+  )
+
+cc_available + dd_available +
+  plot_annotation(
+    title = paste0(site, " - ESSENCE CC/DD Completeness (ED Only)"),
+    subtitle = paste0(dt_rnge),
+    theme = theme(
+      plot.title = element_text(hjust = 0.5, size = 14),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+  )
+```
+
+## ESSENCE Chief Complaint and Discharge Diagnosis Completeness (By Facility) {.tabset .tabset-fade .tabset-pills}
+
+### Chief Complaint Available, By Facility
+
+```{r CCAvailable by Fac, echo=FALSE, warning=FALSE, message=FALSE, fig.align='center'}
+
+cc.facility <- cc.available.facility %>%
+  select(date,
+    pct = count,
+    hospital = hospital_display
+  ) %>%
+  mutate(
+    hospital = gsub("^.{0,3}", "", hospital),
+    alert = case_when(
+      pct < 90 ~ "Alert",
+      pct >= 90 ~ "None"
+    )
+  )
+
+hospital_names <- unique(cc.facility$hospital)
+
+width <- n_distinct(hospital_names) / 4
+
+height <- n_distinct(hospital_names) / 4
+width <- 10
+height <- 15
+```
+
+```{r ccavail_fac_plot, echo=FALSE, warning=FALSE, message=FALSE, fig.align='center', fig.width=18, fig.height=35}
+ggplot(cc.facility, aes(date, pct)) +
+  geom_line(color = "blue") +
+  labs(
+    x = "Date",
+    y = "Percent of ED Visits",
+    title = "Percentage of ED Visits with Chief Complaint Available (ED Only)"
+  ) +
+  scale_x_date(date_labels = "%b %d", expand = c(0, 0.1)) +
+  scale_y_continuous(breaks = pretty_breaks(8)) +
+  facet_wrap(~hospital, ncol = 5) +
+  geom_point(data = subset(cc.facility, alert == "Alert"), color = "red") +
+  # expand_limits(y = 0) + # uncomment if you're looking at a longer period of time and want to see on a scale all the way to 0
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_blank(),
+    legend.position = "bottom"
+  )
+```
+
+### Discharge Diagnosis Available, By Facility
+
+```{r ddavail_fac, echo=FALSE, warning=FALSE, message=FALSE}
+
+dd.facility <- dd.available.facility %>%
+  select(date,
+    pct = count,
+    hospital = hospital_display
+  ) %>%
+  mutate(
+    hospital = gsub("^.{0,3}", "", hospital),
+    alert = case_when(
+      pct < 90 ~ "Alert",
+      pct >= 90 ~ "None"
+    )
+  )
+```
+
+```{r ddavail_fac_plot, echo=FALSE, warning=FALSE, message=FALSE, fig.align='center', fig.width=18, fig.height=35}
+ggplot(dd.facility, aes(date, pct)) +
+  geom_line(color = "blue") +
+  labs(
+    x = "Date",
+    y = "Percent of ED Visits",
+    title = "Percentage of ED Visits with Discharge Diagnosis Available (ED Only)"
+  ) +
+  scale_x_date(date_labels = "%b %d", expand = c(0, 0.1)) +
+  scale_y_continuous(breaks = pretty_breaks(10)) +
+  facet_wrap(~hospital, ncol = 5) +
+  geom_point(data = subset(dd.facility, alert == "Alert"), color = "red") +
+  expand_limits(y = 0) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_blank(),
+    legend.position = "bottom"
+  )
+```
+
+# Validity Metrics (Overall Performance) {.tabset .tabset-fade .tabset-pills}
+
+Validity is a measurement of how useful and accurate syndromic surveillance data is, and is presented below using percentages, with higher percentages representing stronger validity. The percentages below indicate the percentage of patient encounters with a valid, non-null response for that message element after the raw HL7 messages have been processed and parsed into the MN\_PR_Processed table. Validity metrics presented below are limited to patient encounters with a **C_Patient_Class of** `r paste(patient_class)`.\*\*
+
+NSSP requires at least **80% validity** across Priority 1 data elements, and 80% validity across Priority 2 data elements within 12 months of a facility being moved to "production" status. Certain message fields are required in every message, while some fields are only required once per patient encounter (at least once per C_Biosense_ID; see table for explanation).
+
+NSSP Priority 1 and Priority 2 element validity metrics are presented in the plot and facility-specific tables below (including hyperlinks to all relevant code sets), followed by a plot and table of patient encounter messages sent to the Exceptions table due to either a missing required data element or an inconsistency with the MN\_Operational_Crosswalk or MN\_MFT (Master Facility Table).
+
+## Overall MN Validity (MN\_PR_Processed Table)
+
+The following plots display MN's percent validity across NSSP Priority 1 and Priority 2 data quality elements for messages from all `r paste(pat.class)` patient encounters received by the MN\_PR_Processed table between `r start_date_lab` and `r end_date_lab` (as of `r local_time_display`).
+
+NSSP's Validity assessment methodology has been replicated as close as possible from the Microsoft SQL code present in the NSSP SAS Studio Data Quality on Demand (DQOD) validity assessment programs ("dqodvl.sas" and "dqodvlrpt.sas"). Note that the NSSP Data Quality Dashboards (v1 and v2) assess validity on a per message basis, omitting messages with null fields, and neither the NSSP Data Quality Dashboards nor the NSSP SAS Studio Data Quality On Demand (DQOD) programs limit patient encounters by patient class, thus values presented below may differ slightly from CDC/NSSP data quality metrics.
+
+A message field is considered valid if it follows the corresponding Validity Definition and/or contains a valid value from the appropriate Public Health Information Network Vocabulary Access and Distribution System (PHIN VADS) code set when applicable.
+
+In the site-wide plot(s) below, data fields with 80% validity or greater are green, while fields with less than 80% validity are yellow or red, depending on the value.
+
+**"Required" Field Abbreviations:**
+
+-   **R**: Required for every message
+
+-   **RE**: Required at least once across each patient encounter (C_Biosense_ID) (may remain empty in initial message)
+
+-   **CR**: Calculated and Required; required for every message and patient encounter
+
+-   **CRE**: Calculated and Required; required at least once across each patient encounter (may remain empty in initial message)
+
+Note: C_Biosense_ID has been used to group individual messages by patient encounter. Thus for RE/CRE elements, at least one message from that patient encounter should contain completed, valid RE/CRE fields.
+
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Data Element               | Validity Definition                                                                                                                       | Required | Code Set Location (PHIN-VADS\*) or Processing Logic                                                                                                                                     |
++============================+===========================================================================================================================================+==========+=========================================================================================================================================================================================+
+| **Priority 1 Elements**    |                                                                                                                                           |          |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Admit_Date_Time            | Considered valid if field contains a valid date-time (in POSIXct format)                                                                  | R        |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Admit_Reason_Description   | Considered valid if field is not null and string length \> 2                                                                              | RE       |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| C_Chief_Complaint          | Considered valid if value in its entirety is not found in the Non-informative Chief Complaint (NICC) terms list and string length is \> 2 | CRE      | Parsed from the first non-null Chief_Complaint_Text or Admit_Reason_Description from the patient encounter                                                                              |
+|                            |                                                                                                                                           |          |                                                                                                                                                                                         |
+|                            |                                                                                                                                           |          | Non-informative Chief Complaint (NICC) terms list can be found in the NSSP Data Dictionary in the [NSSP Technical Resource Center](https://www.cdc.gov/nssp/biosense/publications.html) |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| C_Death                    | Considered valid if field is not null and contains "Yes" or "No"                                                                          | CRE      | Set to Yes if: Patient_Death_Indicator = First letter of "Y" and/or                                                                                                                     |
+|                            |                                                                                                                                           |          |                                                                                                                                                                                         |
+|                            |                                                                                                                                           |          | \- PID-29.1 is not null and/or                                                                                                                                                          |
+|                            |                                                                                                                                           |          |                                                                                                                                                                                         |
+|                            |                                                                                                                                           |          | \- PV1-36.1 contains "20," "22," "23," "24," "25," "26," "27," "28," "29," "40," "41," or "42"                                                                                          |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| C_Facility_ID              | Considered valid if field is not null and exists in the site's Master Facility Table (MFT) or Operational_Crosswalk                       | CR       | Inferred from the first non null value from Treating_Facility_ID and/or Sending_Facility_ID                                                                                             |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| C_FacType_Patient_Class    | Considered valid if value exists in PHIN VADS value list                                                                                  | CR       | Valid values are inferred using Facility_Type_Code                                                                                                                                      |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| C_Patient_Age              | Considered valid if value is numeric and less than 120                                                                                    | CRE      | Inferred from the first non-null from C_Visit_Date - Birth_Date, Age_Reported, and/or Age_Calculated                                                                                    |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| C_Patient_Age_Years        | Considered valid if value is numeric and less than 120                                                                                    | CRE      | Inferred from C_Patient_Age and C_Patient_Age_Source                                                                                                                                    |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| C_Patient_Class            | Considered valid if value exists in PHIN VADS value list                                                                                  | CR       | Inferred from the first valid, non-null Patient_Class_Code, OR is mapped from C_FacType_Patient_Class, OR is mapped from C_MFT_Patient_Class                                            |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| C_Unique_Patient_ID        | Considered valid if field is not null                                                                                                     | CR       | Inferred from the first non-null value from Medical_Record_Number, Patient_ID, First_Patient_ID, Patient_Account_Number, or Visit_Number                                                |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Chief_Complaint_Text       | Considered valid if field is not null and string length is \> 2                                                                           | RE       |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Diagnosis_Code             | Considered valid if value in its entirety is not found in the Non-informative Chief Complaint (NICC) terms list and string length is \> 2 | RE       | Non-informative Chief Complaint (NICC) terms list can be found in the NSSP Data Dictionary in the [NSSP Technical Resource Center](https://www.cdc.gov/nssp/biosense/publications.html) |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Diagnosis_Description      | Considered valid if field contains a string length greater \> 2                                                                           | RE       |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Facility_Type_Code         | Considered valid if value exists in PHIN VADS value list                                                                                  | R        | [PHVS_FacilityVisitType_SyndromicSurveillance](https://phinvads.cdc.gov/vads/ViewValueSet.action?id=43E2BA38-DFDE-E411-8970-0017A477041A)                                               |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Patient_Class_Code         | Considered valid if value exists in PHIN VADS value list                                                                                  | R        | [PHVS_PatientClass_SyndromicSurveillance](https://phinvads.cdc.gov/vads/ViewValueSet.action?id=564F8F8B-E1DE-E411-8970-0017A477041A)                                                    |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Patient_Zip                | Considered valid if characters are digits and formatted as \##### or #####-####                                                           | RE       |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Processing_ID              | Considered valid if field is not null and contains "D," "P," or "T"                                                                       | R        | Note: "P" denotes "Production," "D" denotes "Debug," and "T" denotes "Training"                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Sending_Facility_ID        | Considered valid if field is not null                                                                                                     | R        | Note: this is how this field is processed in the DQOD SQL code.                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Treating_Facility_ID       | Considered valid if field is not null                                                                                                     | R        | Note: this is how this field is processed in the DQOD SQL code.                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Trigger_Event              | Considered valid if value exists in PHIN VADS value list                                                                                  | R        | [PHVS_EventType_SyndromicSurveillance](https://phinvads.cdc.gov/vads/ViewValueSet.action?oid=2.16.840.1.114222.4.11.6048)                                                               |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Visit_ID                   | Considered valid if field is not null                                                                                                     | R        |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| **Priority 2 Elements**    |                                                                                                                                           |          |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| First_Patient_ID           | Considered valid if field is not null                                                                                                     | R        |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Medical_Record_Number      | Considered valid if field is not null                                                                                                     | R        |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Sending_Facility_ID_Source | Considered valid if field is not null                                                                                                     | R        |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Message_Date_Time          | Considered valid if field contains a valid date-time (in POSIXct format)                                                                  | R        |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Recorded_Date_Time         | Considered valid if field contains a valid date-time (in POSIXct format)                                                                  | R        |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Discharge_Disposition      | Considered valid if value exists in PHIN VADS value list                                                                                  | RE       | [PHVS_DischargeDisposition_HL7_2x](https://phinvads.cdc.gov/vads/ViewValueSet.action?id=34A6AAF7-0444-48CC-B92B-C6D01AC775F0)                                                           |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Discharge_Date_Time        | Considered valid if field contains a valid date-time (in POSIXct format)                                                                  | RE       |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Administrative_Sex         | Considered valid if value exists in PHIN VADS value list                                                                                  | RE       | [PHVS_Gender_SyndromicSurveillance](https://phinvads.cdc.gov/vads/ViewValueSet.action?id=6358110D-9517-E011-87A0-00188B39829B)                                                          |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Age_Reported               | Considered valid if value is numeric and less than 120                                                                                    | RE       |                                                                                                                                                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Age_Units_Reported         | Considered valid if value exists in PHIN VADS value list                                                                                  | RE       | [PHVS_AgeUnit_SyndromicSurveillance](https://phinvads.cdc.gov/vads/ViewValueSet.action?id=5002CD54-9317-E011-87A0-00188B39829B)                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| C_Patient_Age_Units        | Considered valid if value exists in PHIN VADS value list                                                                                  | C        | [PHVS_AgeUnit_SyndromicSurveillance](https://phinvads.cdc.gov/vads/ViewValueSet.action?id=5002CD54-9317-E011-87A0-00188B39829B)                                                         |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Race_Code                  | Considered valid if all values received within that message exist in PHIN VADS value list                                                 | RE       | [PHVS_RaceCategory_CDC](https://phinvads.cdc.gov/vads/ViewValueSet.action?id=67D34BBC-617F-DD11-B38D-00188B398520) OR                                                                   |
+|                            |                                                                                                                                           |          |                                                                                                                                                                                         |
+|                            |                                                                                                                                           |          | [PHVS_RaceCategory_CDC_NullFlavor](https://phinvads.cdc.gov/vads/ViewValueSet.action?oid=2.16.840.1.114222.4.11.7205)                                                                   |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Ethnicity_Code             | Considered valid if all values received within that message exist in PHIN VADS value list                                                 | RE       | [PHVS_EthnicityGroup_CDC](https://phinvads.cdc.gov/vads/ViewValueSet.action?id=35D34BBC-617F-DD11-B38D-00188B398520) OR                                                                 |
+|                            |                                                                                                                                           |          |                                                                                                                                                                                         |
+|                            |                                                                                                                                           |          | [PHVS_EthnicityGroup_CDC_Unk](https://phinvads.cdc.gov/vads/ViewValueSet.action?id=3F411A6E-74DA-E411-8970-0017A477041A)                                                                |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Ethnicity_Description      | Considered valid if field contains a parsed PHVS_EthnicityGroup_CDC value                                                                 | RE       | [PHVS_EthnicityGroup_CDC](https://phinvads.cdc.gov/vads/ViewValueSet.action?id=35D34BBC-617F-DD11-B38D-00188B398520)                                                                    |
+|                            |                                                                                                                                           |          |                                                                                                                                                                                         |
+|                            |                                                                                                                                           |          | OR                                                                                                                                                                                      |
+|                            |                                                                                                                                           |          |                                                                                                                                                                                         |
+|                            |                                                                                                                                           |          | [PHVS_EthnicityGroup_CDC_Unk](https://phinvads.cdc.gov/vads/ViewValueSet.action?id=3F411A6E-74DA-E411-8970-0017A477041A)                                                                |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Patient_City               | Considered valid if field is not null                                                                                                     | RE       | (Field is assessed for completeness as in NSSP SAS DQOD validity program)                                                                                                               |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Patient_State              | Considered valid if field contains a valid US state abbreviation or FIPS code                                                             | RE       | [PHVS_State_FIPS_5-2](https://phinvads.cdc.gov/vads/ViewValueSet.action?oid=2.16.840.1.114222.4.11.830)                                                                                 |
+|                            |                                                                                                                                           |          |                                                                                                                                                                                         |
+|                            |                                                                                                                                           |          | (Field is assessed for completeness as in NSSP SAS DQOD validity program)                                                                                                               |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| C_Patient_County           | Considered valid if field is not null and contains a valid FIPS code from PHVS_County_FIPS_6-4                                            | RE       | [PHVS_County_FIPS_6-4](https://phinvads.cdc.gov/vads/ViewValueSet.action?oid=2.16.840.1.114222.4.11.829)                                                                                |
+|                            |                                                                                                                                           |          |                                                                                                                                                                                         |
+|                            |                                                                                                                                           |          | (Field is assessed for completeness as in NSSP SAS DQOD validity program)                                                                                                               |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Patient_Country            | Considered valid if field is not null and contains a valid code from PHVS_Country_ISO_3166-1                                              | RE       | [PHVS_Country_ISO_3166-1](https://phinvads.cdc.gov/vads/ViewValueSet.action?oid=2.16.840.1.114222.4.11.828)                                                                             |
+|                            |                                                                                                                                           |          |                                                                                                                                                                                         |
+|                            |                                                                                                                                           |          | (Field is assessed for completeness as in NSSP SAS DQOD validity program)                                                                                                               |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Admit_Reason_Code          | Considered valid if field is not null                                                                                                     | RE       | Actual valid values would be ICD-9, ICD-10-CM, and/or SNOMED-CT codes                                                                                                                   |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Chief_Complaint_Code       | Considered valid if field is not null                                                                                                     | RE       | Actual valid values would be ICD-9, ICD-10-CM, and/or SNOMED-CT codes                                                                                                                   |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Diagnosis_Type             | Considered valid if all values received within that message exist in PHIN VADS value list                                                 | RE       | [PHVS_DiagnosisType_HL7_2x](https://phinvads.cdc.gov/vads/ViewValueSet.action?id=25D34BBC-617F-DD11-B38D-00188B398520)                                                                  |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Version_ID                 | Considered valid if field is not null                                                                                                     | R        | Denotes HL7 version number (must be 2.5.1)                                                                                                                                              |
++----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+: \* PHIN VADS: Public Health Information Network Vocabulary Access and Distribution System
+
+```{r validity_plot_Anaysis, echo=FALSE,warning=FALSE,message=FALSE,fig.align='center',fig.width=10,fig.height=50}
+# NSSP Priority 1 Required Elements (required in every message)
+p1_R <- ED.messages %>%
+  mutate(
+    vAdmit_Date_Time = case_when(
+      is.POSIXct(Admit_Date_Time) ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vC_Facility_ID = case_when(
+      !is.na(C_Facility_ID) ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vC_FacType_Patient_Class = case_when(
+      str_detect(C_FacType_Patient_Class, "E|I|O") ~ "valid",
+      is.na(C_FacType_Patient_Class) ~ "invalid",
+      TRUE ~ "invalid"
+    ),
+    vC_Patient_Class = case_when(
+      str_detect(C_Patient_Class, "E|O|I") ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vC_Unique_Patient_ID = case_when(
+      !is.na(C_Unique_Patient_ID) ~ "valid",
+      is.na(C_Unique_Patient_ID) ~ "invalid"
+    ),
+    vFacility_Type_Code = case_when(
+      str_detect(Facility_Type_Code, "261QE0002X|1021-5|261QM2500X|261QP2300X|261QU0200X") ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vPatient_Class_Code = case_when(
+      str_detect(Patient_Class_Code, "E|I|B|O|P|R") ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vProcessing_ID = case_when(
+      str_detect(Processing_ID, "D|P|T") ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vSending_Facility_ID = case_when(
+      !is.na(Sending_Facility_ID) ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vTreating_Facility_ID = case_when(
+      !is.na(Treating_Facility_ID) ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vTrigger_Event = case_when(
+      str_detect(Trigger_Event, "A01|A03|A04|A08") ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vVisit_ID = case_when(
+      !is.na(Visit_ID) ~ "valid",
+      TRUE ~ "invalid"
+    )
+  )
+
+# Summarize NSSP Priority 1 Required Element Validity
+p1_R_summary <- p1_R %>%
+  dplyr::group_by(Parent_Organization) %>%
+  summarize(
+    Admit_Date_Time = round((sum(vAdmit_Date_Time == "valid") /
+      (sum(vAdmit_Date_Time == "valid") +
+        sum(vAdmit_Date_Time == "invalid")) * 100), 2),
+    C_Facility_ID = round((sum(vC_Facility_ID == "valid") /
+      (sum(vC_Facility_ID == "valid") +
+        sum(vC_Facility_ID == "invalid")) * 100), 2),
+    C_FacType_Patient_Class = round((sum(vC_FacType_Patient_Class == "valid") /
+      (sum(vC_FacType_Patient_Class == "valid") +
+        sum(vC_FacType_Patient_Class == "invalid")) * 100), 2),
+    C_Patient_Class = round((sum(vC_Patient_Class == "valid") /
+      (sum(vC_Patient_Class == "valid") +
+        sum(vC_Patient_Class == "invalid")) * 100), 2),
+    C_Unique_Patient_ID = round((sum(vC_Unique_Patient_ID == "valid") /
+      (sum(vC_Unique_Patient_ID == "valid") +
+        sum(vC_Unique_Patient_ID == "invalid")) * 100), 2),
+    Facility_Type_Code = round((sum(vFacility_Type_Code == "valid") /
+      (sum(vFacility_Type_Code == "valid") +
+        sum(vFacility_Type_Code == "invalid")) * 100), 2),
+    Patient_Class_Code = round((sum(vPatient_Class_Code == "valid") /
+      (sum(vPatient_Class_Code == "valid") +
+        sum(vPatient_Class_Code == "invalid")) * 100), 2),
+    Processing_ID = round((sum(vProcessing_ID == "valid") /
+      (sum(vProcessing_ID == "valid") +
+        sum(vProcessing_ID == "invalid")) * 100), 2),
+    Sending_Facility_ID = round(((sum(vSending_Facility_ID == "valid") /
+      (sum(vSending_Facility_ID == "valid") +
+        sum(vSending_Facility_ID == "invalid"))) * 100), 2),
+    Treating_Facility_ID = round(((sum(vTreating_Facility_ID == "valid") /
+      (sum(vTreating_Facility_ID == "valid") +
+        sum(vTreating_Facility_ID == "invalid"))) * 100), 2),
+    Trigger_Event = round(((sum(vTrigger_Event == "valid") /
+      (sum(vTrigger_Event == "valid") +
+        sum(vTrigger_Event == "invalid"))) * 100), 2),
+    Visit_ID = round(((sum(vVisit_ID == "valid") /
+      (sum(vVisit_ID == "valid") +
+        sum(vVisit_ID == "invalid"))) * 100), 2)
+  ) %>%
+  ungroup() %>%
+  pivot_longer(cols = -Parent_Organization) %>%
+  dplyr::rename(
+    Metric = name,
+    Percent_Valid = value
+  )
+
+# NSSP Priority 1 RE & CRE Element Validity (Required Once Per Patient Encounter, e.g., must be present in at least one message/record per patient)
+p1_RE <- ED.messages %>%
+  mutate(
+    C_Patient_Age = as.integer(C_Patient_Age),
+    admit_reason = case_when(
+      str_length(Admit_Reason_Description) > 2 ~ 1,
+      TRUE ~ 0
+    ),
+    c_chief_complaint = case_when(
+      str_length(C_Chief_Complaint) > 2 ~ 1,
+      TRUE ~ 0
+    ),
+    chief_complaint_text = case_when(
+      str_length(Chief_Complaint_Text) > 2 ~ 1,
+      TRUE ~ 0
+    ),
+    diag_code = case_when(
+      str_length(Diagnosis_Code) > 2 ~ 1,
+      TRUE ~ 0
+    ),
+    diag_descript = case_when(
+      str_length(Diagnosis_Description) > 2 ~ 1,
+      TRUE ~ 0
+    ),
+    zip = case_when(
+      str_detect(Patient_Zip, regex("^\\d{5}$|^\\d{5}.\\d{4}$")) ~ 1,
+      TRUE ~ 0
+    ),
+    c_age = case_when(
+      C_Patient_Age >= 0 & C_Patient_Age < 120 ~ 1,
+      TRUE ~ 0
+    ),
+    c_age_years = case_when(
+      C_Patient_Age_Years >= 0 & C_Patient_Age_Years < 120 ~ 1,
+      TRUE ~ 0
+    )
+  ) %>%
+  dplyr::group_by(C_Biosense_ID) %>%
+  mutate(
+    vAdmit_Reason_Description = case_when(
+      any(admit_reason == 1) ~ "valid",
+      all(admit_reason == 0) ~ "invalid"
+    ),
+    vC_Chief_Complaint = case_when(
+      any(c_chief_complaint == 1) ~ "valid",
+      all(c_chief_complaint == 0) ~ "invalid"
+    ),
+    vC_Death = case_when(
+      any(str_detect(C_Death, "Yes|No")) ~ "valid",
+      all(is.na(C_Death)) ~ "invalid"
+    ),
+    vC_Patient_Age = case_when(
+      any(c_age == 1) ~ "valid",
+      all(c_age == 0) ~ "invalid"
+    ),
+    vC_Patient_Age_Years = case_when(
+      any(c_age_years == 1) ~ "valid",
+      all(c_age_years == 0) ~ "invalid"
+    ),
+    vChief_Complaint_Text = case_when(
+      any(chief_complaint_text == 1) ~ "valid",
+      all(chief_complaint_text == 0) ~ "invalid"
+    ),
+    vDiagnosis_Code = case_when(
+      any(diag_code == 1) ~ "valid",
+      all(diag_code == 0) ~ "invalid"
+    ),
+    vDiagnosis_Description = case_when(
+      any(diag_descript == 1) ~ "valid",
+      all(diag_descript == 0) ~ "invalid"
+    ),
+    vPatient_Zip = case_when(
+      any(zip == 1) ~ "valid",
+      all(zip == 0) ~ "invalid"
+    )
+  ) %>%
+  slice(which.max(Arrived_Date_Time)) %>%
+  ungroup()
+
+# Summarize NSSP Priority 1 RE & CRE Element Validity by Feed
+p1_RE_summary <- p1_RE %>%
+  group_by(Parent_Organization) %>%
+  summarize(
+    Admit_Reason_Description = round((sum(vAdmit_Reason_Description == "valid") /
+      (sum(vAdmit_Reason_Description == "valid") +
+        sum(vAdmit_Reason_Description == "invalid")) * 100), 2),
+    C_Chief_Complaint = round((sum(vC_Chief_Complaint == "valid") /
+      (sum(vC_Chief_Complaint == "valid") +
+        sum(vC_Chief_Complaint == "invalid")) * 100), 2),
+    C_Death = round((sum(vC_Death == "valid") /
+      (sum(vC_Death == "valid") +
+        sum(vC_Death == "invalid")) * 100), 2),
+    C_Patient_Age = round((sum(vC_Patient_Age == "valid") /
+      (sum(vC_Patient_Age == "valid") +
+        sum(vC_Patient_Age == "invalid")) * 100), 2),
+    C_Patient_Age_Years = round((sum(vC_Patient_Age_Years == "valid") /
+      (sum(vC_Patient_Age_Years == "valid") +
+        sum(vC_Patient_Age_Years == "invalid")) * 100), 2),
+    C_Chief_Complaint_Text = round((sum(vChief_Complaint_Text == "valid") /
+      (sum(vChief_Complaint_Text == "valid") +
+        sum(vChief_Complaint_Text == "invalid")) * 100), 2),
+    Diagnosis_Code = round((sum(vDiagnosis_Code == "valid") /
+      (sum(vDiagnosis_Code == "valid") +
+        sum(vDiagnosis_Code == "invalid")) * 100), 2),
+    Diagnosis_Description = round((sum(vDiagnosis_Description == "valid") /
+      (sum(vDiagnosis_Description == "valid") +
+        sum(vDiagnosis_Description == "invalid")) * 100), 2),
+    Patient_Zip = round((sum(vPatient_Zip == "valid") /
+      (sum(vPatient_Zip == "valid") +
+        sum(vPatient_Zip == "invalid")) * 100), 2)
+  ) %>%
+  ungroup() %>%
+  pivot_longer(cols = -Parent_Organization) %>%
+  dplyr::rename(
+    Metric = name,
+    Percent_Valid = value
+  )
+
+# Combine Metrics for Priority 1 Plot
+priority_1_plot <- rbind(p1_R_summary, p1_RE_summary) %>%
+  arrange(Metric)
+
+
+# Calculate NSSP Priority 2 Required Element Validity (required in every message)
+p2_R <- ED.messages %>%
+  mutate(
+    vFirst_Patient_ID = case_when(
+      !is.na(First_Patient_ID) ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vMedical_Record_Number = case_when(
+      !is.na(Medical_Record_Number) ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vSending_Facility_ID_Source = case_when(
+      str_detect(Sending_Facility_ID_Source, "MSH-4.1|MSH-4.2") ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vMessage_Date_Time = case_when(
+      is.POSIXct(Message_Date_Time) ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vRecorded_Date_Time = case_when(
+      is.POSIXct(Recorded_Date_Time) ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vVersion_ID = case_when(
+      str_detect(Version_ID, "2.5.1") ~ "valid",
+      TRUE ~ "invalid"
+    )
+  )
+
+
+
+# Summarize NSSP Priority 2 Required Elements
+p2_R_summary <- p2_R %>%
+  dplyr::group_by(Parent_Organization) %>%
+  summarize(
+    First_Patient_ID = round((sum(vFirst_Patient_ID == "valid") /
+      (sum(vFirst_Patient_ID == "valid") +
+        sum(vFirst_Patient_ID == "invalid")) * 100), 2),
+    Medical_Record_Number = round((sum(vMedical_Record_Number == "valid") /
+      (sum(vMedical_Record_Number == "valid") +
+        sum(vMedical_Record_Number == "invalid")) * 100), 2),
+    Sending_Facility_ID_Source = round((sum(vSending_Facility_ID_Source == "valid") /
+      (sum(vSending_Facility_ID_Source == "valid") +
+        sum(vSending_Facility_ID_Source == "invalid")) * 100), 2),
+    Message_Date_Time = round((sum(vMessage_Date_Time == "valid") /
+      (sum(vMessage_Date_Time == "valid") +
+        sum(vMessage_Date_Time == "invalid")) * 100), 2),
+    Recorded_Date_Time = round((sum(vRecorded_Date_Time == "valid") /
+      (sum(vRecorded_Date_Time == "valid") +
+        sum(vRecorded_Date_Time == "invalid")) * 100), 2),
+    Version_ID = round((sum(vVersion_ID == "valid") /
+      (sum(vVersion_ID == "valid") +
+        sum(vVersion_ID == "invalid")) * 100), 2)
+  ) %>%
+  ungroup() %>%
+  pivot_longer(cols = -Parent_Organization) %>%
+  dplyr::rename(
+    Metric = name,
+    Percent_Valid = value
+  )
+
+# NSSP Priority 2 RE & CRE Element Validity (Required Once Per Patient Encounter, e.g., must be present in at least one message/record per patient)
+p2_RE <- ED.messages %>%
+  mutate(
+    discharge_disposition = case_when(
+      str_detect(Discharge_Disposition, "1-9|0[1-9]|1[0-9]|2[0-9]|3[0-9]|4[0-9]|5[0-9]|6[0-9]|7[0-9]|8[0-9]|9[0-9]|10[0-9]") ~ 1,
+      TRUE ~ 0
+    ),
+    discharge_date_time = case_when(
+      !is.na(Discharge_Date_Time) ~ 1,
+      TRUE ~ 0
+    ),
+    administrative_sex = case_when(
+      str_detect(Administrative_Sex, "(F|M|O|U)") ~ 1,
+      TRUE ~ 0
+    ),
+    age_reported = case_when(
+      Age_Reported >= 0 & Age_Reported < 120 ~ 1,
+      TRUE ~ 0
+    ),
+    age_units_reported = case_when(
+      str_detect(Age_Units_Reported, "(d|m|UNK|wk|a|day|DAY|month|MONTH|unknown|UNKNOWN|week|WEEK|year|YEAR|DAYS|WEEKS|MONTHS|YEARS|days|weeks|months|years)") ~ 1,
+      TRUE ~ 0
+    ),
+    race_code = case_when(
+      str_detect(Race_Code, regex("(?>1002-5|2028-9|2054-5|2076-8|2131-1|2106-3|PHC1175|UNK|NI|ASKU|NASK)*?", ignore_case = T)) ~ 1,
+      TRUE ~ 0
+    ),
+    ethnicity_code = case_when(
+      str_detect(Ethnicity_Code, regex("(2135-2|2186-5|PHC1175|UNK)", ignore_case = T)) ~ 1,
+      TRUE ~ 0
+    ),
+    ethnicity_description = case_when(
+      str_detect(Ethnicity_Description, "(Hispanic or Latino|Not Hispanic or Latino|HISPANIC OR LATINO|NOT HISPANIC OR LATINO|UNKNOWN|unknown)") ~ 1,
+      TRUE ~ 0
+    ),
+    patient_city = case_when(
+      !is.na(Patient_City) ~ 1,
+      TRUE ~ 0
+    ),
+    patient_state = case_when(
+      !is.na(Patient_State) ~ 1,
+      TRUE ~ 0
+    ),
+    c_patient_county = case_when(
+      !is.na(C_Patient_County) ~ 1,
+      TRUE ~ 0
+    ),
+    patient_country = case_when(
+      !is.na(Patient_Country) ~ 1,
+      TRUE ~ 0
+    ),
+    admit_reason_code = case_when(
+      !is.na(Admit_Reason_Code) ~ 1,
+      TRUE ~ 0
+    ),
+    chief_complaint_code = case_when(
+      !is.na(Chief_Complaint_Code) ~ 1,
+      TRUE ~ 0
+    ),
+    diagnosis_type = case_when(
+      str_detect(Diagnosis_Type, "(A|F|W)+") ~ 1,
+      TRUE ~ 0
+    ),
+  ) %>%
+  group_by(C_Biosense_ID) %>%
+  mutate(
+    vDischarge_Disposition = case_when(
+      any(discharge_disposition == 1) ~ "valid",
+      all(discharge_disposition == 0) ~ "invalid"
+    ),
+    vDischarge_Date_Time = case_when(
+      any(discharge_date_time == 1) ~ "valid",
+      all(discharge_date_time == 0) ~ "invalid"
+    ),
+    vAdministrative_Sex = case_when(
+      any(administrative_sex == 1) ~ "valid",
+      all(administrative_sex == 0) ~ "invalid"
+    ),
+    vAge_Reported = case_when(
+      any(age_reported == 1) ~ "valid",
+      all(age_reported == 0) ~ "invalid"
+    ),
+    vAge_Units_Reported = case_when(
+      any(age_units_reported == 1) ~ "valid",
+      all(age_units_reported == 0) ~ "invalid"
+    ),
+    vC_Patient_Age_Units = case_when(
+      any(!is.na(C_Patient_Age_Units)) ~ "valid",
+      all(is.na(C_Patient_Age_Units)) ~ "invalid"
+    ),
+    vRace_Code = case_when(
+      any(race_code == 1) ~ "valid",
+      all(race_code == 0) ~ "invalid"
+    ),
+    vEthnicity_Code = case_when(
+      any(ethnicity_code == 1) ~ "valid",
+      all(ethnicity_code == 0) ~ "invalid"
+    ),
+    vEthnicity_Description = case_when(
+      any(ethnicity_description == 1) ~ "valid",
+      all(ethnicity_description == 0) ~ "invalid"
+    ),
+    vPatient_City = case_when(
+      any(patient_city == 1) ~ "valid",
+      all(patient_city == 0) ~ "invalid"
+    ),
+    vPatient_State = case_when(
+      any(patient_state == 1) ~ "valid",
+      all(patient_state == 0) ~ "invalid"
+    ),
+    vC_Patient_County = case_when(
+      any(c_patient_county == 1) ~ "valid",
+      all(c_patient_county == 0) ~ "invalid"
+    ),
+    vPatient_Country = case_when(
+      any(patient_country == 1) ~ "valid",
+      all(patient_country == 0) ~ "invalid"
+    ),
+    vAdmit_Reason_Code = case_when(
+      any(admit_reason_code == 1) ~ "valid",
+      all(admit_reason_code == 0) ~ "invalid"
+    ),
+    vChief_Complaint_Code = case_when(
+      any(chief_complaint_code == 1) ~ "valid",
+      all(chief_complaint_code == 0) ~ "invalid"
+    ),
+    vDiagnosis_Type = case_when(
+      any(diagnosis_type == 1) ~ "valid",
+      all(diagnosis_type == 0) ~ "invalid"
+    )
+  ) %>%
+  slice(which.max(Arrived_Date_Time)) %>%
+  ungroup()
+
+# Summarize NSSP Priority 2 RE & CRE Elements by Parent_Organization
+p2_RE_summary <- p2_RE %>%
+  group_by(Parent_Organization) %>%
+  summarize(
+    Discharge_Disposition = round((sum(vDischarge_Disposition == "valid") /
+      (sum(vDischarge_Disposition == "valid") +
+        sum(vDischarge_Disposition == "invalid")) * 100), 2),
+    Discharge_Date_Time = round((sum(vDischarge_Date_Time == "valid") /
+      (sum(vDischarge_Date_Time == "valid") +
+        sum(vDischarge_Date_Time == "invalid")) * 100), 2),
+    Administrative_Sex = round((sum(vAdministrative_Sex == "valid") /
+      (sum(vAdministrative_Sex == "valid") +
+        sum(vAdministrative_Sex == "invalid")) * 100), 2),
+    Age_Reported = round((sum(vAge_Reported == "valid") /
+      (sum(vAge_Reported == "valid") +
+        sum(vAge_Reported == "invalid")) * 100), 2),
+    Age_Units_Reported = round((sum(vAge_Units_Reported == "valid") /
+      (sum(vAge_Units_Reported == "valid") +
+        sum(vAge_Units_Reported == "invalid")) * 100), 2),
+    C_Patient_Age_Units = round((sum(vC_Patient_Age_Units == "valid") /
+      (sum(vC_Patient_Age_Units == "valid") +
+        sum(vC_Patient_Age_Units == "invalid")) * 100), 2),
+    Race_Code = round((sum(vRace_Code == "valid") /
+      (sum(vRace_Code == "valid") +
+        sum(vRace_Code == "invalid")) * 100), 2),
+    Ethnicity_Code = round((sum(vEthnicity_Code == "valid") /
+      (sum(vEthnicity_Code == "valid") +
+        sum(vEthnicity_Code == "invalid")) * 100), 2),
+    Ethnicity_Description = round((sum(vEthnicity_Description == "valid") /
+      (sum(vEthnicity_Description == "valid") +
+        sum(vEthnicity_Description == "invalid")) * 100), 2),
+    Patient_City = round((sum(vPatient_City == "valid") /
+      (sum(vPatient_City == "valid") +
+        sum(vPatient_City == "invalid")) * 100), 2),
+    Patient_State = round((sum(vPatient_State == "valid") /
+      (sum(vPatient_State == "valid") +
+        sum(vPatient_State == "invalid")) * 100), 2),
+    C_Patient_County = round((sum(vC_Patient_County == "valid") /
+      (sum(vC_Patient_County == "valid") +
+        sum(vC_Patient_County == "invalid")) * 100), 2),
+    Patient_Country = round((sum(vPatient_Country == "valid") /
+      (sum(vPatient_Country == "valid") +
+        sum(vPatient_Country == "invalid")) * 100), 2),
+    Admit_Reason_Code = round((sum(vAdmit_Reason_Code == "valid") /
+      (sum(vAdmit_Reason_Code == "valid") +
+        sum(vAdmit_Reason_Code == "invalid")) * 100), 2),
+    Chief_Complaint_Code = round((sum(vChief_Complaint_Code == "valid") /
+      (sum(vChief_Complaint_Code == "valid") +
+        sum(vChief_Complaint_Code == "invalid")) * 100), 2),
+    Diagnosis_Type = round((sum(vDiagnosis_Type == "valid") /
+      (sum(vDiagnosis_Type == "valid") +
+        sum(vDiagnosis_Type == "invalid")) * 100), 2)
+  ) %>%
+  ungroup() %>%
+  pivot_longer(cols = -Parent_Organization) %>%
+  dplyr::rename(
+    Metric = name,
+    Percent_Valid = value
+  )
+
+# Combine R and RE elements
+priority_2_plot <- rbind(p2_R_summary, p2_RE_summary) %>%
+  arrange(Metric)
+
+
+
+
+# NSSP Priority 3 Required Elements (required in every message)
+p3_R <- ED.messages %>%
+  mutate(
+    vBirth_Date_time = case_when(
+      is.POSIXct(Birth_Date_time) ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vDiagnosis_Date_Time = case_when(
+      is.POSIXct(Diagnosis_Date_Time) ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vProcedure_Date_Time = case_when(
+      is.POSIXct(Procedure_Date_Time) ~ "valid",
+      TRUE ~ "invalid"
+    ),
+    vDeath_Date_Time = case_when(
+      is.POSIXct(Death_Date_Time) ~ "valid",
+      TRUE ~ "invalid"
+    )
+  )
+
+# Summarize NSSP Priority 3 Required Elements
+p3_R_summary <- p3_R %>%
+  dplyr::group_by(Parent_Organization) %>%
+  summarize(
+    Birth_Date_time = round((sum(vBirth_Date_time == "valid") /
+      (sum(vBirth_Date_time == "valid") +
+        sum(vBirth_Date_time == "invalid")) * 100), 2),
+    Diagnosis_Date_Time = round((sum(vDiagnosis_Date_Time == "valid") /
+      (sum(vDiagnosis_Date_Time == "valid") +
+        sum(vDiagnosis_Date_Time == "invalid")) * 100), 2),
+    Procedure_Date_Time = round((sum(vProcedure_Date_Time == "valid") /
+      (sum(vProcedure_Date_Time == "valid") +
+        sum(vProcedure_Date_Time == "invalid")) * 100), 2),
+    Death_Date_Time = round((sum(vDeath_Date_Time == "valid") /
+      (sum(vDeath_Date_Time == "valid") +
+        sum(vDeath_Date_Time == "invalid")) * 100), 2)
+  ) %>%
+  ungroup() %>%
+  pivot_longer(cols = -Parent_Organization) %>%
+  dplyr::rename(
+    Metric = name,
+    Percent_Valid = value
+  )
+
+# NSSP Priority 3 RE & CRE Element Validity (Required Once Per Patient Encounter, e.g., must be present in at least one message/record per patient)
+p3_RE <- ED.messages %>%
+  mutate(
+    procedure_code = case_when(
+      !is.na(Procedure_Code) ~ 1,
+      TRUE ~ 0
+    ),
+    procedure_description = case_when(
+      !is.na(Procedure_Description) ~ 1,
+      TRUE ~ 0
+    ),
+    patient_death_indicator = case_when(
+      !is.na(Patient_Death_Indicator) ~ 1,
+      TRUE ~ 0
+    ),
+    admission_type = case_when(
+      !is.na(Admission_Type) ~ 1,
+      TRUE ~ 0
+    ),
+    ambulatory_status = case_when(
+      !is.na(Ambulatory_Status) ~ 1,
+      TRUE ~ 0
+    ),
+    height = case_when(
+      !is.na(Height) ~ 1,
+      TRUE ~ 0
+    ),
+    height_units = case_when(
+      !is.na(Height_Units) ~ 1,
+      TRUE ~ 0
+    ),
+    weight = case_when(
+      !is.na(Weight) ~ 1,
+      TRUE ~ 0
+    ),
+    weight_units = case_when(
+      !is.na(Weight_Units) ~ 1,
+      TRUE ~ 0
+    ),
+    insurance_coverage = case_when(
+      !is.na(Insurance_Coverage) ~ 1,
+      TRUE ~ 0
+    ),
+    age_reported = case_when(
+      !is.na(Age_Reported) ~ 1,
+      TRUE ~ 0
+    ),
+    triage_notes = case_when(
+      !is.na(Triage_Notes) ~ 1,
+      TRUE ~ 0
+    ),
+    initial_acuity_code = case_when(
+      !is.na(Initial_Acuity_Code) ~ 1,
+      TRUE ~ 0
+    ),
+    initial_acuity_description = case_when(
+      !is.na(Initial_Acuity_Description) ~ 1,
+      TRUE ~ 0
+    ),
+    pregnancy_status_code = case_when(
+      !is.na(Pregnancy_Status_Code) ~ 1,
+      TRUE ~ 0
+    ),
+    pregnancy_status_description = case_when(
+      !is.na(Pregnancy_Status_Description) ~ 1,
+      TRUE ~ 0
+    ),
+    smoking_status_code = case_when(
+      !is.na(Smoking_Status_Code) ~ 1,
+      TRUE ~ 0
+    ),
+    smoking_status_description = case_when(
+      !is.na(Smoking_Status_Description) ~ 1,
+      TRUE ~ 0
+    ),
+  ) %>%
+  group_by(C_Biosense_ID) %>%
+  mutate(
+    vProcedure_Code = case_when(
+      any(procedure_code == 1) ~ "valid",
+      all(procedure_code == 0) ~ "invalid"
+    ),
+    vProcedure_Description = case_when(
+      any(procedure_description == 1) ~ "valid",
+      all(procedure_description == 0) ~ "invalid"
+    ),
+    vPatient_Death_Indicator = case_when(
+      any(patient_death_indicator == 1) ~ "valid",
+      all(patient_death_indicator == 0) ~ "invalid"
+    ),
+    vAdmission_Type = case_when(
+      any(admission_type == 1) ~ "valid",
+      all(admission_type == 0) ~ "invalid"
+    ),
+    vAmbulatory_Status = case_when(
+      any(ambulatory_status == 1) ~ "valid",
+      all(ambulatory_status == 0) ~ "invalid"
+    ),
+    vHeight = case_when(
+      any(height == 1) ~ "valid",
+      all(height == 0) ~ "invalid"
+    ),
+    vHeight_Units = case_when(
+      any(height_units == 1) ~ "valid",
+      all(height_units == 0) ~ "invalid"
+    ),
+    vWeight = case_when(
+      any(weight == 1) ~ "valid",
+      all(weight == 0) ~ "invalid"
+    ),
+    vWeight_Units = case_when(
+      any(weight_units == 1) ~ "valid",
+      all(weight_units == 0) ~ "invalid"
+    ),
+    vInsurance_Coverage = case_when(
+      any(insurance_coverage == 1) ~ "valid",
+      all(insurance_coverage == 0) ~ "invalid"
+    ),
+    vAge_Reported = case_when(
+      any(age_reported == 1) ~ "valid",
+      all(age_reported == 0) ~ "invalid"
+    ),
+    vTriage_Notes = case_when(
+      any(triage_notes == 1) ~ "valid",
+      all(triage_notes == 0) ~ "invalid"
+    ),
+    vInitial_Acuity_Code = case_when(
+      any(initial_acuity_code == 1) ~ "valid",
+      all(initial_acuity_code == 0) ~ "invalid"
+    ),
+    vInitial_Acuity_Description = case_when(
+      any(initial_acuity_description == 1) ~ "valid",
+      all(initial_acuity_description == 0) ~ "invalid"
+    ),
+    vPregnancy_Status_Code = case_when(
+      any(pregnancy_status_code == 1) ~ "valid",
+      all(pregnancy_status_code == 0) ~ "invalid"
+    ),
+    vPregnancy_Status_Description = case_when(
+      any(pregnancy_status_description == 1) ~ "valid",
+      all(pregnancy_status_description == 0) ~ "invalid"
+    ),
+    vSmoking_Status_Code = case_when(
+      any(smoking_status_code == 1) ~ "valid",
+      all(smoking_status_code == 0) ~ "invalid"
+    ),
+    vSmoking_Status_Description = case_when(
+      any(smoking_status_description == 1) ~ "valid",
+      all(smoking_status_description == 0) ~ "invalid"
+    )
+  ) %>%
+  ungroup()
+
+
+# Summarize NSSP Priority 3 Required Element Validity
+p3_RE_summary <- p3_RE %>%
+  group_by(Parent_Organization) %>%
+  summarize(
+    Procedure_Code = round((sum(vProcedure_Code == "valid") /
+      (sum(vProcedure_Code == "valid") +
+        sum(vProcedure_Code == "invalid")) * 100), 2),
+    Procedure_Description = round((sum(vProcedure_Description == "valid") /
+      (sum(vProcedure_Description == "valid") +
+        sum(vProcedure_Description == "invalid")) * 100), 2),
+    Patient_Death_Indicator = round((sum(vPatient_Death_Indicator == "valid") /
+      (sum(vPatient_Death_Indicator == "valid") +
+        sum(vPatient_Death_Indicator == "invalid")) * 100), 2),
+    Admission_Type = round((sum(vAdmission_Type == "valid") /
+      (sum(vAdmission_Type == "valid") +
+        sum(vAdmission_Type == "invalid")) * 100), 2),
+    Ambulatory_Status = round(((sum(vAmbulatory_Status == "valid") /
+      (sum(vAmbulatory_Status == "valid") +
+        sum(vAmbulatory_Status == "invalid"))) * 100), 2),
+    Height = round(((sum(vHeight == "valid") /
+      (sum(vHeight == "valid") +
+        sum(vHeight == "invalid"))) * 100), 2),
+    Height_Units = round(((sum(vHeight_Units == "valid") /
+      (sum(vHeight_Units == "valid") +
+        sum(vHeight_Units == "invalid"))) * 100), 2),
+    Weight = round(((sum(vWeight == "valid") /
+      (sum(vWeight == "valid") +
+        sum(vWeight == "invalid"))) * 100), 2),
+    Weight_Units = round(((sum(vWeight_Units == "valid") /
+      (sum(vWeight_Units == "valid") +
+        sum(vWeight_Units == "invalid"))) * 100), 2),
+    Triage_Notes = round(((sum(vTriage_Notes == "valid") /
+      (sum(vTriage_Notes == "valid") +
+        sum(vTriage_Notes == "invalid"))) * 100), 2),
+    Initial_Acuity_Code = round(((sum(vInitial_Acuity_Code == "valid") /
+      (sum(vInitial_Acuity_Code == "valid") +
+        sum(vInitial_Acuity_Code == "invalid"))) * 100), 2),
+    Initial_Acuity_Description = round(((sum(vInitial_Acuity_Description == "valid") /
+      (sum(vInitial_Acuity_Description == "valid") +
+        sum(vInitial_Acuity_Description == "invalid"))) * 100), 2),
+    Pregnancy_Status_Code = round(((sum(vPregnancy_Status_Code == "valid") /
+      (sum(vPregnancy_Status_Code == "valid") +
+        sum(vPregnancy_Status_Code == "invalid"))) * 100), 2),
+    Insurance_Coverage = round(((sum(vInsurance_Coverage == "valid") /
+      (sum(vInsurance_Coverage == "valid") +
+        sum(vInsurance_Coverage == "invalid"))) * 100), 2),
+    Pregnancy_Status_Description = round(((sum(vPregnancy_Status_Description == "valid") /
+      (sum(vPregnancy_Status_Description == "valid") +
+        sum(vPregnancy_Status_Description == "invalid"))) * 100), 2),
+    Smoking_Status_Code = round(((sum(vSmoking_Status_Code == "valid") /
+      (sum(vPregnancy_Status_Code == "valid") +
+        sum(vPregnancy_Status_Code == "invalid"))) * 100), 2),
+    Smoking_Status_Description = round(((sum(vSmoking_Status_Description == "valid") /
+      (sum(vSmoking_Status_Description == "valid") +
+        sum(vSmoking_Status_Description == "invalid"))) * 100), 2),
+    Age_Reported = round(((sum(vAge_Reported == "valid") /
+      (sum(vAge_Reported == "valid") +
+        sum(vAge_Reported == "invalid"))) * 100), 2)
+  ) %>%
+  ungroup() %>%
+  pivot_longer(cols = -Parent_Organization) %>%
+  dplyr::rename(
+    Metric = name,
+    Percent_Valid = value
+  )
+
+# Combine R and RE elements
+priority_3_plot <- rbind(p3_R_summary, p3_RE_summary) %>%
+  arrange(Metric)
+```
+
+## BioSense Platform NSSP Priority 1 Data Field Validity
+
+The plots below display MN's site-wide Priority 1 data validity metrics for ED visits as defined by NSSP.
+
+NSSP requires 80% Validity for these Priority 1 across each patient encounter. In other words, at least 80% of ED visits should have at least one message where each required element is not null to ensure useful and timely syndromic surveillance data.
+
+```{r validity_plot_1, echo=FALSE,warning=FALSE,message=FALSE,fig.align='center',fig.width=10,fig.height=50}
+# plot <- list()
+# for (data in list(list(priority_1_plot, "Priority 1 Elements"), list(priority_2_plot, "Priority 2 Elements") , list(priority_3_plot, "Priority 3 Elements"))) {
+#  plot[[data[[2]]]] <- datatable(data[[1]], filter = "top",
+#           options = list(iDisplayLength = 10,
+#                          lengthMenu = list(c(10, 100, -1), c('10', '100', 'All'))
+#                          )) %>%
+#   formatStyle(
+#     'Percent_Valid',
+#     background = styleColorBar(c(0,100), '#003865', angle = 270),
+#     backgroundSize = '70%',
+#     backgroundRepeat = 'no-repeat',
+#     backgroundPosition = 'center',
+#     textAlign = 'left'
+#   )
+# }
+# plot[[1]]
+# 
+# plot <- list()
+# for (data in list(list(element1.plot, "Priority 1 Elements"), list(element2.plot, "Priority 2 Elements"), list(element3.plot, "Priority 3 Elements"))) {
+#   plot[[data[[2]]]] <- datatable(data[[1]], filter = "top",
+#                                  options = list(iDisplayLength = 10,
+#                                                 lengthMenu = list(c(10, 100, -1), c('10', '100', 'All'))
+#                                  )) %>%
+#     formatStyle(
+#       'Percent_Complete',
+#       background = styleInterval(80, c('#FF0000', '#003865')),  # Red for < 80%, Blue for >= 80%
+#       backgroundSize = '70%',
+#       backgroundRepeat = 'no-repeat',
+#       backgroundPosition = 'center',
+#       textAlign = 'left'
+#     ) %>%
+#     formatStyle(
+#       'Percent_Complete',
+#       color = styleInterval(80, c('black', 'white'))  # Text color for contrast
+#     )
+# }
+# plot[[1]]
+
+
+plot <- list()
+for (data in list(list(element1.plot, "Priority 1 Elements"), list(element2.plot, "Priority 2 Elements"), list(element3.plot, "Priority 3 Elements"))) {
+  
+  temp_data <- data[[1]] %>%
+    mutate(Percent_Complete = Percent_Complete / 100) %>%
+    mutate(
+      color_pal = if_else(Percent_Complete < 0.80, "#DC3220", "#003865"), 
+      row = row_number()
+    ) %>%
+    relocate(row)
+  
+  # plot[[data[[2]]]] <- datatable(data[[1]], filter = "top",
+  #                                options = list(iDisplayLength = 10,
+  #                                               lengthMenu = list(c(10, 100, -1), c('10', '100', 'All'))
+  #                                )) %>%
+  #   formatStyle(
+  #     'Percent_Complete',
+  #     background = styleColorBar(c(0, 100), 'lightgray'),  # Base bar in light gray from 0 to 100%
+  #     backgroundSize = '100% 50%',
+  #     backgroundRepeat = 'no-repeat',
+  #     backgroundPosition = 'center',
+  #     textAlign = 'left'
+  #   ) %>%
+  #   formatStyle(
+  #     'Percent_Complete',
+  #     background = styleInterval(80, c('linear-gradient(to right, red 0%, red ', 'linear-gradient(to right, #003865 0%, #003865 ')),
+  #     backgroundSize = '100% 50%',
+  #     backgroundRepeat = 'no-repeat',
+  #     backgroundPosition = 'center',
+  #     textAlign = 'left'
+  #   ) %>%
+  #   formatStyle(
+  #     'Percent_Complete',
+  #     color = styleInterval(80, c('white', 'white'))  # Text color for contrast
+  #   )
+  
+    plot[[data[[2]]]] <- reactable(
+    theme = fivethirtyeight(),
+    temp_data,
+    columns = list(
+      row = colDef(
+        name = "", 
+        align = "left",
+        minWidth = 20
+      ),
+      Parent_Organization = colDef(
+        name = "Parent Organization",
+        align = "left",
+        filterable = TRUE,
+        sortable = TRUE
+      ),
+      Metric = colDef(
+        name = "Metric",
+        align = "left",
+        filterable = TRUE,
+        sortable = TRUE
+      ),
+      Percent_Complete = colDef(
+        name = "Percent Complete",
+        cell = data_bars(
+          temp_data,
+          fill_color_ref = "color_pal",
+          background = "#A6A6A6",
+          text_position = "inside-base",
+          max_value = 1,
+          number_fmt = scales::percent
+        ),
+        sortable = TRUE
+      ),
+      color_pal = colDef(show = FALSE)
+    )
+  )
+    
+}
+plot[[1]]
+
+#Close to what I wanted but the bars for below 80% are still shwoing blue.
+# plot <- list()
+# for (data in list(list(element1.plot, "Priority 1 Elements"), list(element2.plot, "Priority 2 Elements"), list(element3.plot, "Priority 3 Elements"))) {
+#   plot[[data[[2]]]] <- datatable(data[[1]], filter = "top",
+#                                  options = list(iDisplayLength = 10,
+#                                                 lengthMenu = list(c(10, 100, -1), c('10', '100', 'All'))
+#                                  )) %>%
+#     formatStyle(
+#       'Percent_Complete',
+#       background = styleColorBar(c(0, 100), 'lightblue'),  # Base bar in light blue from 0 to 100%
+#       backgroundSize = '100% 50%',
+#       backgroundRepeat = 'no-repeat',
+#       backgroundPosition = 'center',
+#       textAlign = 'left'
+#     ) %>%
+#     formatStyle(
+#       'Percent_Complete',
+#       background = styleInterval(
+#         80,
+#         c('linear-gradient(to right, red ', 'linear-gradient(to right, #003865 ')
+#       ),
+#       backgroundSize = styleInterval(80, c('70% 100%', '100% 100%')),  # 70% bar size below 80%, 100% above
+#       backgroundRepeat = 'no-repeat',
+#       backgroundPosition = 'center',
+#       textAlign = 'left'
+#     ) %>%
+#     formatStyle(
+#       'Percent_Complete',
+#       backgroundColor = styleInterval(80, c('red', 'white'))  # Text color for contrast
+#     )
+# }
+# plot[[1]]
+
+
+```
+## BioSense Platform NSSP Priority 2 Data Field Validity
+
+The plots below display MN's site-wide Priority 2 data validity metrics for ED visits as defined by NSSP.
+
+NSSP requires 80% validity for these Priority 2 across each patient encounter. In other words, at least 80% of ED visits should have at least one message where each required element is not null to ensure useful and timely syndromic surveillance data.
+
+```{r validity_plot_2, echo=FALSE,warning=FALSE,message=FALSE,fig.align='center',fig.width=10,fig.height=50}
+plot[[2]]
+```
+## BioSense Platform NSSP Priority 3 Data Field Validity
+
+The plots below display MN's site-wide Priority 3 data validity metrics for ED visits as defined by NSSP.
+
+NSSP requires 80% validity for these Priority 3 across each patient encounter. In other words, at least 80% of ED visits should have at least one message where each required element is not null to ensure useful and timely syndromic surveillance data.
+
+```{r validity_plot_3, echo=FALSE,warning=FALSE,message=FALSE,fig.align='center',fig.width=10,fig.height=50}
+plot[[3]]
+```
+
+
+## Validity by Message Field by Facility (MN\_PR_Processed Table)
+
+The tables below display MN's percent validity across NSSP Priority 1 and Priority 2 data quality elements by facility, for messages from all `r paste(pat.class)` patient encounters received by the MN\_PR_Processed table between `r start_date_lab` and `r end_date_lab` (as of `r local_time_display`).
+
+Fields with 80% validity or greater are green, while fields with less than 80% validity are red, indicating that field is below the NSSP validity threshold of 80%.
+
+Note: the PR_Processed table may reflect slightly different completeness and validity metrics compared to production ESSENCE data.
+
+```{r facility_validity_table, echo=FALSE, warning=FALSE,message=FALSE,fig.align='center'}
+# Calculate validity percentage by facility
+p1_R_facility <- p1_R %>%
+  dplyr::group_by(Facility_Name) %>%
+  summarize(
+    Admit_Date_Time = round((sum(vAdmit_Date_Time == "valid") /
+      (sum(vAdmit_Date_Time == "valid") +
+        sum(vAdmit_Date_Time == "invalid")) * 100), 2),
+    C_Facility_ID = round((sum(vC_Facility_ID == "valid") /
+      (sum(vC_Facility_ID == "valid") +
+        sum(vC_Facility_ID == "invalid")) * 100), 2),
+    C_FacType_Patient_Class = round((sum(vC_FacType_Patient_Class == "valid") /
+      (sum(vC_FacType_Patient_Class == "valid") +
+        sum(vC_FacType_Patient_Class == "invalid")) * 100), 2),
+    C_Patient_Class = round((sum(vC_Patient_Class == "valid") /
+      (sum(vC_Patient_Class == "valid") +
+        sum(vC_Patient_Class == "invalid")) * 100), 2),
+    C_Unique_Patient_ID = round((sum(vC_Unique_Patient_ID == "valid") /
+      (sum(vC_Unique_Patient_ID == "valid") +
+        sum(vC_Unique_Patient_ID == "invalid")) * 100), 2),
+    Facility_Type_Code = round((sum(vFacility_Type_Code == "valid") /
+      (sum(vFacility_Type_Code == "valid") +
+        sum(vFacility_Type_Code == "invalid")) * 100), 2),
+    Patient_Class_Code = round((sum(vPatient_Class_Code == "valid") /
+      (sum(vPatient_Class_Code == "valid") +
+        sum(vPatient_Class_Code == "invalid")) * 100), 2),
+    Processing_ID = round((sum(vProcessing_ID == "valid") /
+      (sum(vProcessing_ID == "valid") +
+        sum(vProcessing_ID == "invalid")) * 100), 2),
+    Sending_Facility_ID = round(((sum(vSending_Facility_ID == "valid") /
+      (sum(vSending_Facility_ID == "valid") +
+        sum(vSending_Facility_ID == "invalid"))) * 100), 2),
+    Treating_Facility_ID = round(((sum(vTreating_Facility_ID == "valid") /
+      (sum(vTreating_Facility_ID == "valid") +
+        sum(vTreating_Facility_ID == "invalid"))) * 100), 2),
+    Trigger_Event = round(((sum(vTrigger_Event == "valid") /
+      (sum(vTrigger_Event == "valid") +
+        sum(vTrigger_Event == "invalid"))) * 100), 2),
+    Visit_ID = round(((sum(vVisit_ID == "valid") /
+      (sum(vVisit_ID == "valid") +
+        sum(vVisit_ID == "invalid"))) * 100), 2)
+  ) %>%
+  ungroup()
+p1_RE_facility <- p1_RE %>%
+  group_by(Facility_Name) %>%
+  summarize(
+    Admit_Reason_Description = round((sum(vAdmit_Reason_Description == "valid") /
+      (sum(vAdmit_Reason_Description == "valid") +
+        sum(vAdmit_Reason_Description == "invalid")) * 100), 2),
+    C_Chief_Complaint = round((sum(vC_Chief_Complaint == "valid") /
+      (sum(vC_Chief_Complaint == "valid") +
+        sum(vC_Chief_Complaint == "invalid")) * 100), 2),
+    C_Death = round((sum(vC_Death == "valid") /
+      (sum(vC_Death == "valid") +
+        sum(vC_Death == "invalid")) * 100), 2),
+    C_Patient_Age = round((sum(vC_Patient_Age == "valid") /
+      (sum(vC_Patient_Age == "valid") +
+        sum(vC_Patient_Age == "invalid")) * 100), 2),
+    C_Patient_Age_Years = round((sum(vC_Patient_Age_Years == "valid") /
+      (sum(vC_Patient_Age_Years == "valid") +
+        sum(vC_Patient_Age_Years == "invalid")) * 100), 2),
+    Chief_Complaint_Text = round((sum(vChief_Complaint_Text == "valid") /
+      (sum(vChief_Complaint_Text == "valid") +
+        sum(vChief_Complaint_Text == "invalid")) * 100), 2),
+    Diagnosis_Code = round((sum(vDiagnosis_Code == "valid") /
+      (sum(vDiagnosis_Code == "valid") +
+        sum(vDiagnosis_Code == "invalid")) * 100), 2),
+    Diagnosis_Description = round((sum(vDiagnosis_Description == "valid") /
+      (sum(vDiagnosis_Description == "valid") +
+        sum(vDiagnosis_Description == "invalid")) * 100), 2),
+    Patient_Zip = round((sum(vPatient_Zip == "valid") /
+      (sum(vPatient_Zip == "valid") +
+        sum(vPatient_Zip == "invalid")) * 100), 2)
+  ) %>%
+  ungroup()
+p1_facility <- left_join(p1_R_facility, p1_RE_facility, by = "Facility_Name")
+p2_R_facility <- p2_R %>%
+  dplyr::group_by(Facility_Name) %>%
+  summarize(
+    First_Patient_ID = round((sum(vFirst_Patient_ID == "valid") /
+      (sum(vFirst_Patient_ID == "valid") +
+        sum(vFirst_Patient_ID == "invalid")) * 100), 2),
+    Medical_Record_Number = round((sum(vMedical_Record_Number == "valid") /
+      (sum(vMedical_Record_Number == "valid") +
+        sum(vMedical_Record_Number == "invalid")) * 100), 2),
+    Sending_Facility_ID_Source = round((sum(vSending_Facility_ID_Source == "valid") /
+      (sum(vSending_Facility_ID_Source == "valid") +
+        sum(vSending_Facility_ID_Source == "invalid")) * 100), 2),
+    Message_Date_Time = round((sum(vMessage_Date_Time == "valid") /
+      (sum(vMessage_Date_Time == "valid") +
+        sum(vMessage_Date_Time == "invalid")) * 100), 2),
+    Recorded_Date_Time = round((sum(vRecorded_Date_Time == "valid") /
+      (sum(vRecorded_Date_Time == "valid") +
+        sum(vRecorded_Date_Time == "invalid")) * 100), 2),
+    Version_ID = round((sum(vVersion_ID == "valid") /
+      (sum(vVersion_ID == "valid") +
+        sum(vVersion_ID == "invalid")) * 100), 2)
+  ) %>%
+  ungroup()
+p2_RE_facility <- p2_RE %>%
+  group_by(Facility_Name) %>%
+  summarize(
+    Discharge_Disposition = round((sum(vDischarge_Disposition == "valid") /
+      (sum(vDischarge_Disposition == "valid") +
+        sum(vDischarge_Disposition == "invalid")) * 100), 2),
+    Discharge_Date_Time = round((sum(vDischarge_Date_Time == "valid") /
+      (sum(vDischarge_Date_Time == "valid") +
+        sum(vDischarge_Date_Time == "invalid")) * 100), 2),
+    Administrative_Sex = round((sum(vAdministrative_Sex == "valid") /
+      (sum(vAdministrative_Sex == "valid") +
+        sum(vAdministrative_Sex == "invalid")) * 100), 2),
+    Age_Reported = round((sum(vAge_Reported == "valid") /
+      (sum(vAge_Reported == "valid") +
+        sum(vAge_Reported == "invalid")) * 100), 2),
+    Age_Units_Reported = round((sum(vAge_Units_Reported == "valid") /
+      (sum(vAge_Units_Reported == "valid") +
+        sum(vAge_Units_Reported == "invalid")) * 100), 2),
+    C_Patient_Age_Units = round((sum(vC_Patient_Age_Units == "valid") /
+      (sum(vC_Patient_Age_Units == "valid") +
+        sum(vC_Patient_Age_Units == "invalid")) * 100), 2),
+    Race_Code = round((sum(vRace_Code == "valid") /
+      (sum(vRace_Code == "valid") +
+        sum(vRace_Code == "invalid")) * 100), 2),
+    Ethnicity_Code = round((sum(vEthnicity_Code == "valid") /
+      (sum(vEthnicity_Code == "valid") +
+        sum(vEthnicity_Code == "invalid")) * 100), 2),
+    Ethnicity_Description = round((sum(vEthnicity_Description == "valid") /
+      (sum(vEthnicity_Description == "valid") +
+        sum(vEthnicity_Description == "invalid")) * 100), 2),
+    Patient_City = round((sum(vPatient_City == "valid") /
+      (sum(vPatient_City == "valid") +
+        sum(vPatient_City == "invalid")) * 100), 2),
+    Patient_State = round((sum(vPatient_State == "valid") /
+      (sum(vPatient_State == "valid") +
+        sum(vPatient_State == "invalid")) * 100), 2),
+    C_Patient_County = round((sum(vC_Patient_County == "valid") /
+      (sum(vC_Patient_County == "valid") +
+        sum(vC_Patient_County == "invalid")) * 100), 2),
+    Patient_Country = round((sum(vPatient_Country == "valid") /
+      (sum(vPatient_Country == "valid") +
+        sum(vPatient_Country == "invalid")) * 100), 2),
+    Admit_Reason_Code = round((sum(vAdmit_Reason_Code == "valid") /
+      (sum(vAdmit_Reason_Code == "valid") +
+        sum(vAdmit_Reason_Code == "invalid")) * 100), 2),
+    Chief_Complaint_Code = round((sum(vChief_Complaint_Code == "valid") /
+      (sum(vChief_Complaint_Code == "valid") +
+        sum(vChief_Complaint_Code == "invalid")) * 100), 2),
+    Diagnosis_Type = round((sum(vDiagnosis_Type == "valid") /
+      (sum(vDiagnosis_Type == "valid") +
+        sum(vDiagnosis_Type == "invalid")) * 100), 2)
+  ) %>%
+  ungroup()
+p2_facility <- left_join(p2_R_facility, p2_RE_facility, by = "Facility_Name")
+p3_R_facility <- p3_R %>%
+  dplyr::group_by(Facility_Name) %>%
+  summarize(
+    Birth_Date_time = round((sum(vBirth_Date_time == "valid") /
+      (sum(vBirth_Date_time == "valid") +
+        sum(vBirth_Date_time == "invalid")) * 100), 2),
+    Diagnosis_Date_Time = round((sum(vDiagnosis_Date_Time == "valid") /
+      (sum(vDiagnosis_Date_Time == "valid") +
+        sum(vDiagnosis_Date_Time == "invalid")) * 100), 2),
+    Procedure_Date_Time = round((sum(vProcedure_Date_Time == "valid") /
+      (sum(vProcedure_Date_Time == "valid") +
+        sum(vProcedure_Date_Time == "invalid")) * 100), 2),
+    Death_Date_Time = round((sum(vDeath_Date_Time == "valid") /
+      (sum(vDeath_Date_Time == "valid") +
+        sum(vDeath_Date_Time == "invalid")) * 100), 2)
+  ) %>%
+  ungroup()
+p3_RE_facility <- p3_RE %>%
+  group_by(Facility_Name) %>%
+  summarize(
+    Procedure_Code = round((sum(vProcedure_Code == "valid") /
+      (sum(vProcedure_Code == "valid") +
+        sum(vProcedure_Code == "invalid")) * 100), 2),
+    Procedure_Description = round((sum(vProcedure_Description == "valid") /
+      (sum(vProcedure_Description == "valid") +
+        sum(vProcedure_Description == "invalid")) * 100), 2),
+    Patient_Death_Indicator = round((sum(vPatient_Death_Indicator == "valid") /
+      (sum(vPatient_Death_Indicator == "valid") +
+        sum(vPatient_Death_Indicator == "invalid")) * 100), 2),
+    Admission_Type = round((sum(vAdmission_Type == "valid") /
+      (sum(vAdmission_Type == "valid") +
+        sum(vAdmission_Type == "invalid")) * 100), 2),
+    Ambulatory_Status = round(((sum(vAmbulatory_Status == "valid") /
+      (sum(vAmbulatory_Status == "valid") +
+        sum(vAmbulatory_Status == "invalid"))) * 100), 2),
+    Height = round(((sum(vHeight == "valid") /
+      (sum(vHeight == "valid") +
+        sum(vHeight == "invalid"))) * 100), 2),
+    Height_Units = round(((sum(vHeight_Units == "valid") /
+      (sum(vHeight_Units == "valid") +
+        sum(vHeight_Units == "invalid"))) * 100), 2),
+    Weight = round(((sum(vWeight == "valid") /
+      (sum(vWeight == "valid") +
+        sum(vWeight == "invalid"))) * 100), 2),
+    Weight_Units = round(((sum(vWeight_Units == "valid") /
+      (sum(vWeight_Units == "valid") +
+        sum(vWeight_Units == "invalid"))) * 100), 2),
+    Triage_Notes = round(((sum(vTriage_Notes == "valid") /
+      (sum(vTriage_Notes == "valid") +
+        sum(vTriage_Notes == "invalid"))) * 100), 2),
+    Initial_Acuity_Code = round(((sum(vInitial_Acuity_Code == "valid") /
+      (sum(vInitial_Acuity_Code == "valid") +
+        sum(vInitial_Acuity_Code == "invalid"))) * 100), 2),
+    Initial_Acuity_Description = round(((sum(vInitial_Acuity_Description == "valid") /
+      (sum(vInitial_Acuity_Description == "valid") +
+        sum(vInitial_Acuity_Description == "invalid"))) * 100), 2),
+    Pregnancy_Status_Code = round(((sum(vPregnancy_Status_Code == "valid") /
+      (sum(vPregnancy_Status_Code == "valid") +
+        sum(vPregnancy_Status_Code == "invalid"))) * 100), 2),
+    Insurance_Coverage = round(((sum(vInsurance_Coverage == "valid") /
+      (sum(vInsurance_Coverage == "valid") +
+        sum(vInsurance_Coverage == "invalid"))) * 100), 2),
+    Pregnancy_Status_Description = round(((sum(vPregnancy_Status_Description == "valid") /
+      (sum(vPregnancy_Status_Description == "valid") +
+        sum(vPregnancy_Status_Description == "invalid"))) * 100), 2),
+    Smoking_Status_Code = round(((sum(vSmoking_Status_Code == "valid") /
+      (sum(vPregnancy_Status_Code == "valid") +
+        sum(vPregnancy_Status_Code == "invalid"))) * 100), 2),
+    Smoking_Status_Description = round(((sum(vSmoking_Status_Description == "valid") /
+      (sum(vSmoking_Status_Description == "valid") +
+        sum(vSmoking_Status_Description == "invalid"))) * 100), 2),
+    Age_Reported = round(((sum(vAge_Reported == "valid") /
+      (sum(vAge_Reported == "valid") +
+        sum(vAge_Reported == "invalid"))) * 100), 2)
+  ) %>%
+  ungroup()
+cap <- paste("NSSP Priority 1 Element Percent Validity by Facility from", start_date_lab, "through", end_date_lab)
+p1_facility %>%
+  mutate(
+    Admit_Date_Time = cell_spec(Admit_Date_Time,
+      color = ifelse(Admit_Date_Time >= 80, "green", "red"),
+      align = "c"
+    ),
+    C_Facility_ID = cell_spec(C_Facility_ID,
+      color = ifelse(C_Facility_ID >= 80, "green", "red"),
+      align = "c"
+    ),
+    C_FacType_Patient_Class = cell_spec(C_FacType_Patient_Class,
+      color = ifelse(C_FacType_Patient_Class >= 80, "green", "red"),
+      align = "c"
+    ),
+    C_Patient_Class = cell_spec(C_Patient_Class,
+      color = ifelse(C_Patient_Class >= 80, "green", "red"),
+      align = "c"
+    ),
+    C_Unique_Patient_ID = cell_spec(C_Unique_Patient_ID,
+      color = ifelse(C_Unique_Patient_ID >= 80, "green", "red"),
+      align = "c"
+    ),
+    Facility_Type_Code = cell_spec(Facility_Type_Code,
+      color = ifelse(Facility_Type_Code >= 80, "green", "red"),
+      align = "c"
+    ),
+    Patient_Class_Code = cell_spec(Patient_Class_Code,
+      color = ifelse(Patient_Class_Code >= 80, "green", "red"),
+      align = "c"
+    ),
+    Processing_ID = cell_spec(Processing_ID,
+      color = ifelse(Processing_ID >= 80, "green", "red"),
+      align = "c"
+    ),
+    Sending_Facility_ID = cell_spec(Sending_Facility_ID,
+      color = ifelse(Sending_Facility_ID >= 80, "green", "red"),
+      align = "c"
+    ),
+    Treating_Facility_ID = cell_spec(Treating_Facility_ID,
+      color = ifelse(Treating_Facility_ID >= 80, "green", "red"),
+      align = "c"
+    ),
+    Trigger_Event = cell_spec(Trigger_Event,
+      color = ifelse(Trigger_Event >= 80, "green", "red"),
+      align = "c"
+    ),
+    Admit_Reason_Description = cell_spec(Admit_Reason_Description,
+      color = ifelse(Admit_Reason_Description >= 80, "green", "red"),
+      align = "c"
+    ),
+    C_Chief_Complaint = cell_spec(C_Chief_Complaint,
+      color = ifelse(C_Chief_Complaint >= 80, "green", "red"),
+      align = "c"
+    ),
+    C_Death = cell_spec(C_Death,
+      color = ifelse(C_Death >= 80, "green", "red"),
+      align = "c"
+    ),
+    C_Patient_Age = cell_spec(C_Patient_Age,
+      color = ifelse(C_Patient_Age >= 80, "green", "red"),
+      align = "c"
+    ),
+    C_Patient_Age_Years = cell_spec(C_Patient_Age_Years,
+      color = ifelse(C_Patient_Age_Years >= 80, "green", "red"),
+      align = "c"
+    ),
+    Chief_Complaint_Text = cell_spec(Chief_Complaint_Text,
+      color = ifelse(Chief_Complaint_Text >= 80, "green", "red"),
+      align = "c"
+    ),
+    Diagnosis_Code = cell_spec(Diagnosis_Code,
+      color = ifelse(Diagnosis_Code >= 80, "green", "red"),
+      align = "c"
+    ),
+    Diagnosis_Description = cell_spec(Diagnosis_Description,
+      color = ifelse(Diagnosis_Description >= 80, "green", "red"),
+      align = "c"
+    ),
+    Patient_Zip = cell_spec(Patient_Zip,
+      color = ifelse(Patient_Zip >= 80, "green", "red"),
+      align = "c"
+    )
+  ) %>%
+  kbl(
+    escape = F,
+    caption = cap
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    fixed_thead = T, full_width = F
+  ) %>%
+  row_spec(0, color = "white", background = "black", align = "c", font_size = 9) %>%
+  column_spec(1:22, border_left = T, border_right = T) %>%
+  scroll_box(width = "100%", height = "600px")
+cap1 <- paste("NSSP Priority 2 Element Percent Validity by Facility from", start_date_lab, "through", end_date_lab)
+p2_facility %>%
+  mutate(
+    First_Patient_ID = cell_spec(First_Patient_ID,
+      color = ifelse(First_Patient_ID >= 80, "green", "red"),
+      align = "c"
+    ),
+    Medical_Record_Number = cell_spec(Medical_Record_Number,
+      color = ifelse(Medical_Record_Number >= 80, "green", "red"),
+      align = "c"
+    ),
+    Sending_Facility_ID_Source = cell_spec(Sending_Facility_ID_Source,
+      color = ifelse(Sending_Facility_ID_Source >= 80, "green", "red"),
+      align = "c"
+    ),
+    Message_Date_Time = cell_spec(Message_Date_Time,
+      color = ifelse(Message_Date_Time >= 80, "green", "red"),
+      align = "c"
+    ),
+    Recorded_Date_Time = cell_spec(Recorded_Date_Time,
+      color = ifelse(Recorded_Date_Time >= 80, "green", "red"),
+      align = "c"
+    ),
+    Discharge_Disposition = cell_spec(Discharge_Disposition,
+      color = ifelse(Discharge_Disposition >= 80, "green", "red"),
+      align = "c"
+    ),
+    Discharge_Date_Time = cell_spec(Discharge_Date_Time,
+      color = ifelse(Discharge_Date_Time >= 80, "green", "red"),
+      align = "c"
+    ),
+    Administrative_Sex = cell_spec(Administrative_Sex,
+      color = ifelse(Administrative_Sex >= 80, "green", "red"),
+      align = "c"
+    ),
+    Age_Reported = cell_spec(Age_Reported,
+      color = ifelse(Age_Reported >= 80, "green", "red"),
+      align = "c"
+    ),
+    Age_Units_Reported = cell_spec(Age_Units_Reported,
+      color = ifelse(Age_Units_Reported >= 80, "green", "red"),
+      align = "c"
+    ),
+    C_Patient_Age_Units = cell_spec(C_Patient_Age_Units,
+      color = ifelse(C_Patient_Age_Units >= 80, "green", "red"),
+      align = "c"
+    ),
+    Race_Code = cell_spec(Race_Code,
+      color = ifelse(Race_Code >= 80, "green", "red"),
+      align = "c"
+    ),
+    Ethnicity_Code = cell_spec(Ethnicity_Code,
+      color = ifelse(Ethnicity_Code >= 80, "green", "red"),
+      align = "c"
+    ),
+    Ethnicity_Description = cell_spec(Ethnicity_Description,
+      color = ifelse(Ethnicity_Description >= 80, "green", "red"),
+      align = "c"
+    ),
+    Patient_City = cell_spec(Patient_City,
+      color = ifelse(Patient_City >= 80, "green", "red"),
+      align = "c"
+    ),
+    Patient_State = cell_spec(Patient_State,
+      color = ifelse(Patient_State >= 80, "green", "red"),
+      align = "c"
+    ),
+    C_Patient_County = cell_spec(C_Patient_County,
+      color = ifelse(C_Patient_County >= 80, "green", "red"),
+      align = "c"
+    ),
+    Patient_Country = cell_spec(Patient_Country,
+      color = ifelse(Patient_Country >= 80, "green", "red"),
+      align = "c"
+    ),
+    Admit_Reason_Code = cell_spec(Admit_Reason_Code,
+      color = ifelse(Admit_Reason_Code >= 80, "green", "red"),
+      align = "c"
+    ),
+    Chief_Complaint_Code = cell_spec(Chief_Complaint_Code,
+      color = ifelse(Chief_Complaint_Code >= 80, "green", "red"),
+      align = "c"
+    ),
+    Diagnosis_Type = cell_spec(Diagnosis_Type,
+      color = ifelse(Diagnosis_Type >= 80, "green", "red"),
+      align = "c"
+    ),
+    Version_ID = cell_spec(Version_ID,
+      color = ifelse(Version_ID >= 80, "green", "red"),
+      align = "c"
+    )
+  ) %>%
+  kbl(
+    escape = F,
+    caption = cap1
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    fixed_thead = T, full_width = F
+  ) %>%
+  row_spec(0, color = "white", background = "black", align = "c", font_size = 9) %>%
+  column_spec(1:23, border_left = T, border_right = T) %>%
+  scroll_box(width = "100%", height = "600px")
+p3_facility <- left_join(p3_R_facility, p3_RE_facility, by = "Facility_Name")
+cap2 <- paste("NSSP Priority 3 Element Percent Validity by Facility from", start_date_lab, "through", end_date_lab)
+p3_facility %>%
+  mutate(
+    Birth_Date_time = cell_spec(Birth_Date_time,
+      color = ifelse(Birth_Date_time >= 80, "green", "red"),
+      align = "c"
+    ),
+    Diagnosis_Date_Time = cell_spec(Diagnosis_Date_Time,
+      color = ifelse(Diagnosis_Date_Time >= 80, "green", "red"),
+      align = "c"
+    ),
+    Procedure_Date_Time = cell_spec(Procedure_Date_Time,
+      color = ifelse(Procedure_Date_Time >= 80, "green", "red"),
+      align = "c"
+    ),
+    Procedure_Code = cell_spec(Procedure_Code,
+      color = ifelse(Procedure_Code >= 80, "green", "red"),
+      align = "c"
+    ),
+    Procedure_Description = cell_spec(Procedure_Description,
+      color = ifelse(Procedure_Description >= 80, "green", "red"),
+      align = "c"
+    ),
+    Patient_Death_Indicator = cell_spec(Patient_Death_Indicator,
+      color = ifelse(Patient_Death_Indicator >= 80, "green", "red"),
+      align = "c"
+    ),
+    Death_Date_Time = cell_spec(Death_Date_Time,
+      color = ifelse(Death_Date_Time >= 80, "green", "red"),
+      align = "c"
+    ),
+    Admission_Type = cell_spec(Admission_Type,
+      color = ifelse(Admission_Type >= 80, "green", "red"),
+      align = "c"
+    ),
+    Ambulatory_Status = cell_spec(Ambulatory_Status,
+      color = ifelse(Ambulatory_Status >= 80, "green", "red"),
+      align = "c"
+    ),
+    Height = cell_spec(Height,
+      color = ifelse(Height >= 80, "green", "red"),
+      align = "c"
+    ),
+    Height_Units = cell_spec(Height_Units,
+      color = ifelse(Height_Units >= 80, "green", "red"),
+      align = "c"
+    ),
+    Weight = cell_spec(Weight,
+      color = ifelse(Weight >= 80, "green", "red"),
+      align = "c"
+    ),
+    Weight_Units = cell_spec(Weight_Units,
+      color = ifelse(Weight_Units >= 80, "green", "red"),
+      align = "c"
+    ),
+    Insurance_Coverage = cell_spec(Insurance_Coverage,
+      color = ifelse(Insurance_Coverage >= 80, "green", "red"),
+      align = "c"
+    ),
+    Age_Reported = cell_spec(Age_Reported,
+      color = ifelse(Age_Reported >= 80, "green", "red"),
+      align = "c"
+    ),
+    Triage_Notes = cell_spec(Triage_Notes,
+      color = ifelse(Triage_Notes >= 80, "green", "red"),
+      align = "c"
+    ),
+    Initial_Acuity_Code = cell_spec(Initial_Acuity_Code,
+      color = ifelse(Initial_Acuity_Code >= 80, "green", "red"),
+      align = "c"
+    ),
+    Initial_Acuity_Description = cell_spec(Initial_Acuity_Description,
+      color = ifelse(Initial_Acuity_Description >= 80, "green", "red"),
+      align = "c"
+    ),
+    Pregnancy_Status_Code = cell_spec(Pregnancy_Status_Code,
+      color = ifelse(Pregnancy_Status_Code >= 80, "green", "red"),
+      align = "c"
+    ),
+    Pregnancy_Status_Description = cell_spec(Pregnancy_Status_Description,
+      color = ifelse(Pregnancy_Status_Description >= 80, "green", "red"),
+      align = "c"
+    ),
+    Smoking_Status_Code = cell_spec(Smoking_Status_Code,
+      color = ifelse(Smoking_Status_Code >= 80, "green", "red"),
+      align = "c"
+    ),
+    Smoking_Status_Description = cell_spec(Smoking_Status_Description,
+      color = ifelse(Smoking_Status_Description >= 80, "green", "red"),
+      align = "c"
+    )
+  ) %>%
+  kbl(
+    escape = F,
+    caption = cap2
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    fixed_thead = T, full_width = F
+  ) %>%
+  row_spec(0, color = "white", background = "black", align = "c", font_size = 9) %>%
+  column_spec(1:22, border_left = T, border_right = T) %>%
+  scroll_box(width = "100%", height = "600px")
+```
+
+## ESSENCE API-Derived Chief Complaint and Diagnosis Code Validity (Overall)
+
+The plots below display MN's overall chief complaint completeness and diagnosis code validity calculated from applicable ESSENCE `r paste(pat.class)` patient encounters. These values have been pulled using the CCInformative and DDInformative fields of the ESSENCE API.[^6]
+
+[^6]: [ESSENCE Data Quality Filters](https://www.cdc.gov/nssp/dqc/articles/essence-data-quality-filter.html)
+
+-   The CCInformative field measures whether a given patient encounter has an informative 'chiefcomplaintparsed' (the CC of the CCDD) element at the ESSENCE patient encounter level after non-informative chief complaint (NICC) terms have been removed. See the "ESSENCE Data Quality Filter" page for the list of NICC term.
+
+-   The DDInformative field measures whether a given patient encounter has an informative 'discharge_diagnosis' (the DD of the CCDD, populated by the Diagnosis_Code field from the MN\_PR_Processed table) element at the ESSENCE patient encounter level after non-informative chief complaint (NICC) terms, the phrase "null," and blank spaces have been removed.
+
+A full list of NICC terms can be found in the NSSP Data Dictionary, or at [ESSENCE Data Quality Filters](https://www.cdc.gov/nssp/dqc/articles/essence-data-quality-filter.html).
+
+```{r ccddinformative, echo=FALSE, warning=FALSE, message=FALSE, fig.align='center', fig.width=10}
+
+informative.date <-
+  paste(format(min(cc.informative$date), "%B %d, %Y,"), "to", format(max(cc.informative$date), "%B %d, %Y"))
+
+plot.ccinformative <- ggplot(cc.informative) +
+  geom_line(aes(date, count, color = "CCInformative = 1")) +
+  geom_point(aes(date, count, color = "CCInformative = 1"), size = 1.25) +
+  labs(
+    x = "Date",
+    y = "Percent of Patient Encounters",
+    title = "Chief Complaint Informative"
+  ) +
+  scale_x_date(date_labels = "%b %d", expand = c(0, 0.1)) +
+  scale_y_continuous(
+    breaks = scales::pretty_breaks(8),
+    labels = scales::label_percent(
+      accuracy = 1,
+      scale = 1
+    ),
+    limits = c(0, 100)
+  ) +
+  scale_color_manual(values = c("CCInformative = 1" = "Blue")) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_blank(),
+    legend.position = "bottom"
+  )
+
+plot.ddinformative <- ggplot(dd.informative) +
+  geom_line(aes(date, count, color = "DDInformative = 1")) +
+  geom_point(aes(date, count, color = "DDInformative = 1"), size = 1.25) +
+  labs(
+    x = "Date",
+    y = "Percent of Patient Encounters",
+    title = "Discharge Diagnosis (Code) Informative"
+  ) +
+  scale_x_date(
+    date_labels = "%b %d",
+    expand = c(0, 0.1)
+  ) +
+  scale_y_continuous(
+    breaks = scales::pretty_breaks(8),
+    labels = scales::label_percent(
+      accuracy = 1,
+      scale = 1
+    ),
+    limits = c(0, 100)
+  ) +
+  scale_color_manual(values = c("DDInformative = 1" = "Blue")) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_blank(),
+    legend.position = "bottom"
+  )
+plot.ccinformative + plot.ddinformative +
+  plot_annotation(
+    title = paste0(
+      "ESSENCE API-Derived Chief Complaint and Diagnosis Code Validity (",
+      pat.class,
+      " Only)"
+    ),
+    subtitle = paste0(informative.date),
+    theme = theme(
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(face = "bold", size = 12, hjust = 0.5)
+    )
+  )
+```
+
+## Exception Messages by Error Type, `r start_date_lab` through `r end_date_lab`
+
+The following graph displays counts of messages by message arrival date (Arrived_Date) that contained a message error causing them to be sent to the MN production exceptions table from `r start_date_lab` through `r end_date_lab`.
+
+```{r exceptions_plot, fig.align='center', echo=FALSE, message=FALSE, warning=FALSE}
+
+# Wrangle
+table_messages <- table_messages %>%
+  mutate(
+    Arrived_Date = as.Date(Arrived_Date),
+    Facility_Name = str_trim(Facility_Name, side = "both")
+  )
+exceptions_overall <- table_messages %>%
+  group_by(Reason_Text, Arrived_Date) %>%
+  dplyr::summarize(count = sum(count)) %>%
+  ungroup()
+ad <- list(
+  title = "Number of Messages",
+  zeroline = FALSE,
+  showline = FALSE,
+  showticklabels = TRUE,
+  showgrid = TRUE
+)
+plotly::plot_ly(
+  exceptions_overall,
+  x = ~Arrived_Date,
+  y = ~count,
+  name = ~Reason_Text,
+  type = "scatter",
+  mode = "lines+markers",
+  autosize = F,
+  width = 950,
+  height = 650
+) %>%
+  plotly::layout(
+    title = "Exception Messages Received by Arrived_Date",
+    yaxis = ad,
+    xaxis = list(title = "Date"),
+    legend = list(x = 0, y = -.5)
+  )
+```
+
+## MN Production Exception Messages by Error Type, `r start_date_lab` through `r end_date_lab` (Table)
+
+The following table displays messages from the MN production exceptions table received between `r start_date_lab` through `r end_date_lab`. The table includes:
+
+-   Facility Name
+
+-   Message Error Type
+
+-   and the number of invalid messages, by Message Error Type
+
+```{r exceptions_tbl, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+table_view <- table_messages %>%
+  dplyr::select(Facility_Name, count, Reason_Text) %>%
+  group_by(Reason_Text, `Facility_Name`) %>%
+  dplyr::summarise(count = sum(count))
+table_view <- table_view %>%
+  rename(
+    `Message Error Type` = Reason_Text,
+    `Facility Name` = Facility_Name,
+    `Message Count` = count
+  )
+datatable(
+  table_view,
+  filter = "top",
+  extensions = "Buttons",
+  options = list(
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel", "pdf", "print"),
+    pageLength = 15,
+    autoWidth = TRUE,
+    scrollY = T,
+    order = list(2, "desc")
+  ),
+  rownames = FALSE
+)
+```
