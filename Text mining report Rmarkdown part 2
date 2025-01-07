@@ -1,0 +1,1503 @@
+---
+title: "Minnesota: Total ED Volume Text Mining Report"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+description: This template is a Text Analysis Interactive Dashboard. 
+  PLEASE Knit it with Parameters!!!
+output: 
+  flexdashboard::flex_dashboard:
+    vertical_layout: scroll
+    orientation: columns
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>                     
+.navbar {
+  background-color:#005EAA;
+}
+</style>  
+
+<style type="text/css">
+
+.chart-title {  /* chart_title  */
+   font-size: 20px;
+   font-weight: bold;
+
+</style>
+
+```{r setup, include = FALSE}
+## Libraries ----
+library(Rnssp)
+library(tidyverse)
+library(tidytext)
+library(kableExtra)
+library(janitor)
+library(MMWRweek)
+library(lubridate)
+library(shiny)
+library(flexdashboard)
+library(plotly)
+library(widyr)
+library(visNetwork)
+library(igraph)
+library(ggthemes)
+library(flextable)
+library(DT)
+library(quanteda)
+library(tidyverse)
+library(Rnssp)
+library(janitor)
+# library(quanteda.textmodels)
+# library(quanteda.textstats)
+# library(quanteda.textplots)
+```
+
+```{r comp_data, echo = FALSE, warning = FALSE, message = FALSE}
+
+pattern_replace = "[;/,\\\\*-]|([a-zA-Z])/([\\d])|([\\d])/([a-zA-Z])|([a-zA-Z])/([a-zA-Z])|([\\d])/([\\d])"
+
+data <- api_data %>%
+  clean_names()%>%
+  as.data.table() %>%
+  .[, c("year", "week") := tstrsplit(week_year, "-", fixed = TRUE)] %>%
+  .[, year := as.numeric(year)] %>%
+  .[, week := as.numeric(week)] %>%
+  .[!is.na(week)] %>%
+  .[, date := MMWRweek2Date(year, week)] %>%
+  .[, linenumber := .I] %>%
+  .[, month := round_date(date, "month")] %>%
+  .[, chief_complaint_parsed_orig := chief_complaint_parsed] %>%
+  .[, discharge_diagnosis_orig := discharge_diagnosis] %>%
+  .[, ccdd_orig := ccdd] %>%
+  relocate(c(linenumber, year, week, date, month, chief_complaint_parsed_orig, discharge_diagnosis_orig, ccdd_orig)) %>%
+  .[, chief_complaint_parsed := vapply(lapply(str_split(chief_complaint_parsed, " "), unique), paste, character(1L), collapse = " ")] %>%
+  .[, discharge_diagnosis := gsub(pattern_replace, " ", discharge_diagnosis)] %>%
+  .[, discharge_diagnosis := gsub("\\.", "", discharge_diagnosis)] %>%
+  .[, discharge_diagnosis := gsub("^\\s+|\\s+$", replacement = "", discharge_diagnosis)] %>%
+  .[, discharge_diagnosis := vapply(lapply(str_split(discharge_diagnosis, " "), unique), paste, character(1L), collapse = " ")] %>%
+  .[, ccdd := vapply(lapply(str_split(ccdd, " "), unique), paste, character(1L), collapse = " ")]
+
+```
+
+```{r data and icd_dictionary import, echo = FALSE, warning = FALSE, message = FALSE}
+
+icd_dictionary <- readRDS("icd10.rds") %>%
+  distinct(code, description, .keep_all = TRUE) %>%
+  select(-set)
+
+```
+
+Background
+==========================================================================
+
+Column 
+-----------------------------------------------------------------------
+
+### Purpose  
+
+The purpose of this interactive dashboard is to summarize the chief complaint text and diagnosis codes as part of an initial description of the content of these fields for *all* Minnesota ED records. The API URL is set to pull in the following limited subset of full data details fields:
+
+* Date
+* WeekYear
+* ChiefComplaintParsed
+* DischargeDiagnosis
+* DDParsed
+* CCDD
+* CCDDParsed
+
+The text analyses in this report are based on the ChiefComplaintParsed, DischargeDiagnosis, and CCDD fields. DischargeDiagnosis and CCDD may be replaced with DDParsed and CCDDParsed if free-text (i.e., ICD-10 code description text) occurs frequently in the DischargeDiagnosis.
+
+### Interactive Visualizations 
+
+The visualizations in this dashboard include total weekly volume of encounters, the 200 most frequent n-gram frequencies of chief complaint terms and discharge diagnosis codes, term co-occurrence network graphs for the ChiefComplaintParsed and CCDD fields, a chief complaint and discharge diagnosis term correlation network graph, and n-grams with significant increases or decreases in occurrence over time. Potential clusters or groupings of terms are visualized by node color and can be selected from the "Select by group" drop down menu. All interactive widgets were produced with the `plotly` and `visNetwork` packages which provide hovering functionality such as displaying data point values, ICD-10 code descriptions, co-occurrence frequencies, and correlation coefficients. 
+
+### Query Details
+
+```{r query, echo = FALSE, warning = FALSE, message = FALSE}
+
+query <- url %>%
+  str_replace_all("api/dataDetails/csv", "servlet/DataDetailsServlet")
+
+query_url <- paste0("[API URL](", query, ")")
+
+fields <- c(
+  "syndromeFreeText",
+  "ccddCategoryFreeText"
+)
+
+syndrome_free_text <- ""
+ccdd_category_free_text <- ""
+
+data.frame(Fields = fields, Query = c(syndrome_free_text, ccdd_category_free_text)) %>%
+  mutate(Query = str_replace_all(Query, pattern = "\\^", "\\\\^")) %>%
+  kable("html") %>%
+  kable_styling() %>%
+  add_footnote(label = query_url, escape = FALSE, notation = "symbol") %>%
+  scroll_box(width = "1000px", height = "300px") 
+
+```
+
+Column 
+-----------------------------------------------------------------------
+
+### Total Number of Encounters
+
+```{r total encounters, echo = FALSE, warning = FALSE, message = FALSE}
+
+n_encounters <- format(nrow(data), big.mark = ",")
+valueBox(n_encounters, icon = "fa-hospital")
+
+# valueBox(
+#   value = n_encounters, 
+#   subtitle = "Total Encounters", 
+#   icon = icon("fa-hospital")
+# )
+```
+
+### Date Range
+
+```{r date range, echo = FALSE, warning = FALSE, message = FALSE}
+
+range <- paste(format(as.Date(min(data$date)), "%B %d, %Y"), "to", format(as.Date(max(data$date)), "%B %d, %Y"))
+
+valueBox(range, icon = "fa-calendar", color = "orange")
+
+```
+
+### Weekly Volume of Encounters
+##### Data Source: NSSP-ESSENCE
+
+```{r total volume, echo = FALSE, warning = FALSE, message = FALSE}
+
+data %>%
+  count(date) %>%
+  plot_ly(
+    x = ~date,
+    y = ~n,
+    type = "scatter",
+    mode = "lines+markers",
+    hoverinfo = "text",
+    text = ~ paste(
+      "</br><b>Date:</b>", date,
+      "</br><b>Encounters:</b>", n
+    )
+  ) %>%
+  layout(
+    xaxis = list(title = "MMWR Week Date", rangemode = "tozero"),
+    yaxis = list(title = "Encounters", rangemode = "tozero")
+  ) %>%
+  config(displayModeBar = FALSE)
+```
+
+Unigram {data-navmenu="N-gram Frequencies"} 
+=======================================================================
+
+Column 
+-----------------------------------------------------------------------
+
+### Chief Complaint  
+
+```{r CC unigram frequencies, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 50}
+
+stopterms <- tidytext::stop_words
+stopterms2 <- toupper(str_remove_all(stopwords("english"), "[[:punct:]]"))
+
+cc_tokens <- data %>%
+  corpus(text_field = "chief_complaint_parsed") %>%
+  tokens(
+    what = "word",
+    remove_punct = TRUE,
+    remove_symbols = TRUE,
+    remove_numbers = TRUE,
+    remove_separators = TRUE,
+    verbose = TRUE
+  ) %>%
+  tokens_select(pattern = stopterms$word, selection = "remove", min_nchar = 3) %>%
+  tokens_select(pattern = stopterms2, selection = "remove") %>%
+  tokens_select(pattern = icd_dictionary$code, selection = "remove") %>%
+  tokens_select(pattern = "[a-zA-Z]{1}\\d{2,3}", selection = "remove", valuetype = "regex")
+
+unnested_cc_unigrams <- cc_tokens %>%
+  dfm(tolower = FALSE) %>%
+  tidytext::tidy() %>%
+  as.data.table() %>%
+  .[, document := gsub("text", "", document, fixed = TRUE)] %>%
+  .[, document := as.numeric(document)] %>%
+  setorderv("document") %>%
+  merge(docvars(cc_tokens), by.x = "document", by.y = "linenumber") %>%
+  rename(
+    linenumber = document, 
+    word = term
+  )
+
+ccngram <- unnested_cc_unigrams %>%
+  count(word) %>%
+  slice_max(n, n = 200, with_ties = FALSE) %>%
+  mutate(word = fct_reorder(word, n, .desc = TRUE))
+
+ccngram %>%
+  plot_ly(
+    x = ~n,
+    y = ~word,
+    type = "bar",
+    orientation = "h",
+    hoverinfo = "text",
+    text = ~ paste(
+      word,
+      "<br> Frequency: ", n
+    ),
+    textposition = "none"
+  ) %>%
+  layout(
+    title = "Top 200 Single Term Frequencies of Chief Complaint Parsed",
+    xaxis = list(title = "Frequency"),
+    yaxis = list(autorange = "reversed", title = "Word")
+  ) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+Column 
+-----------------------------------------------------------------------
+
+### Discharge Diagnosis 
+
+```{r DD unigram frequencies, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 50}
+
+dd_stopword_dict <- dictionary(list(
+  pattern1 = "\\b[A-Za-z]{2,20}\\b",
+  pattern2 = "COVID19",
+  pattern3 = "\\b\\d{1,2}[a-zA-Z]{2,20}\\b"
+))
+
+dd_tokens <- data %>%
+  corpus(text_field = "discharge_diagnosis") %>%
+  tokens(
+    what = "word",
+    remove_punct = TRUE,
+    remove_symbols = TRUE,
+    remove_separators = TRUE,
+    verbose = TRUE
+  ) %>%
+  tokens_select(pattern = dd_stopword_dict, valuetype = "regex", selection = "remove", min_nchar = 3)
+
+unnested_dd_unigrams <- dd_tokens %>%
+  dfm(tolower = FALSE) %>%
+  tidytext::tidy() %>%
+  as.data.table() %>%
+  .[, document := gsub("text", "", document, fixed = TRUE)] %>%
+  .[, document := as.numeric(document)] %>%
+  setorderv("document") %>%
+  merge(docvars(dd_tokens), by.x = "document", by.y = "linenumber") %>%
+  rename(
+    linenumber = document, 
+    code = term
+  )
+
+ddngram <- unnested_dd_unigrams %>%
+  count(code) %>%
+  slice_max(n, n = 200, with_ties = FALSE) %>%
+  left_join(icd_dictionary, by = "code") %>%
+  distinct() %>%
+  mutate(description = ifelse(is.na(description), "ICD-9, SNOMED, or invalid DD code", description)) %>%
+  mutate(code = fct_reorder(code, n, .desc = TRUE)) 
+
+ddngram %>%
+  plot_ly(
+    x = ~n,
+    y = ~code,
+    type = "bar",
+    orientation = "h",
+    hoverinfo = "text",
+    text = ~ paste(
+      code, ": ", description,
+      "<br> Frequency: ", n
+    ),
+    textposition = "none"
+  ) %>%
+  layout(
+    title = "Top 200 Single Term Frequencies of Discharge Diagnosis",
+    xaxis = list(title = "Frequency"),
+    yaxis = list(autorange = "reversed", title = "Word")
+  ) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+Bigram {data-navmenu="N-gram Frequencies"} 
+=======================================================================
+
+Column 
+-----------------------------------------------------------------------
+
+### Chief Complaint 
+
+```{r CC bigram frequencies, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 50}
+
+unnested_cc_bigrams <- cc_tokens %>%
+  tokens_ngrams(n = 2, concatenator = " ") %>%
+  dfm(tolower = FALSE) %>%
+  tidytext::tidy() %>%
+  as.data.table() %>%
+  .[, document := gsub("text", "", document, fixed = TRUE)] %>%
+  .[, document := as.numeric(document)] %>%
+  setorderv("document") %>%
+  merge(docvars(dd_tokens), by.x = "document", by.y = "linenumber") %>%
+  rename(
+    linenumber = document, 
+    bigram = term
+  ) %>%
+  .[, c("word1", "word2") := tstrsplit(bigram, " ", fixed = TRUE)] %>%
+  .[, bigram := fifelse(word1 < word2, paste(word1, word2), paste(word2, word1))] 
+
+cc_bigram_top200 <- unnested_cc_bigrams %>%
+  count(bigram) %>%
+  slice_max(n, n = 200, with_ties = FALSE) %>%
+  mutate(bigram = fct_reorder(bigram, n, .desc = TRUE))
+
+cc_bigram_top200 %>%
+  plot_ly(
+    x = ~n,
+    y = ~bigram,
+    type = "bar",
+    orientation = "h",
+    hoverinfo = "text",
+    text = ~ paste(
+      bigram,
+      "<br> Frequency: ", n
+    ),
+    textposition = "none"
+  ) %>%
+  layout(
+    title = "Top 200 Bigram Frequencies of Chief Complaint Parsed",
+    xaxis = list(title = "Frequency"),
+    yaxis = list(autorange = "reversed", title = "Bigram")
+  ) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+Column 
+-----------------------------------------------------------------------
+
+### Discharge Diagnosis
+
+```{r DD bigram frequencies, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 50}
+
+unnested_dd_bigrams <- dd_tokens %>%
+  tokens_ngrams(n = 2, concatenator = " ") %>%
+  dfm(tolower = FALSE) %>%
+  tidytext::tidy() %>%
+  as.data.table()  %>%
+  .[, document := gsub("text", "", document, fixed = TRUE)] %>%
+  .[, document := as.numeric(document)] %>%
+  setorderv("document") %>%
+  merge(docvars(dd_tokens), by.x = "document", by.y = "linenumber") %>%
+  rename(
+    linenumber = document, 
+    bigram = term
+  ) %>%
+  .[, c("word1", "word2") := tstrsplit(bigram, " ", fixed = TRUE)] %>%
+  .[, bigram := fifelse(word1 < word2, paste(word1, word2), paste(word2, word1))] 
+
+ddngram <- unnested_dd_bigrams %>%
+  count(bigram) %>%
+  slice_max(n, n = 200, with_ties = FALSE) %>%
+  separate(bigram, c("code1", "code2"), sep = " ", remove = FALSE) %>%
+  left_join(icd_dictionary, by = c("code1" = "code")) %>%
+  left_join(icd_dictionary, by = c("code2" = "code")) %>%
+  rename(
+    description1 = description.x,
+    description2 = description.y
+  ) %>%
+  distinct() %>%
+  mutate_at(.vars = c("description1", "description2"), ~ifelse(is.na(.), "ICD-9, SNOMED, or invalid DD code", .)) %>%
+  mutate(bigram = fct_reorder(bigram, n, .desc = TRUE)) 
+
+ddngram %>%
+  plot_ly(
+    x = ~n,
+    y = ~bigram,
+    type = "bar",
+    orientation = "h",
+    hoverinfo = "text",
+    text = ~ paste(
+      code1, ": ", description1,
+      "<br>", code2, ": ", description2,
+      "<br> Frequency: ", n
+    ),
+    textposition = "none"
+  ) %>%
+  layout(
+    title = "Top 200 Bigram Frequencies of Discharge Diagnosis",
+    xaxis = list(title = "Frequency"),
+    yaxis = list(autorange = "reversed", title = "Bigram")
+  ) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+Trigram {data-navmenu="N-gram Frequencies"} 
+=======================================================================
+
+Column 
+-----------------------------------------------------------------------
+
+### Chief Complaint  
+
+```{r CC trigram frequencies, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 50}
+
+unnested_cc_trigrams <- cc_tokens %>%
+  tokens_ngrams(n = 3, concatenator = " ") %>%
+  dfm(tolower = FALSE) %>%
+  tidytext::tidy() %>%
+  as.data.table()  %>%
+  .[, document := gsub("text", "", document, fixed = TRUE)] %>%
+  .[, document := as.numeric(document)] %>%
+  setorderv("document") %>%
+  merge(docvars(cc_tokens), by.x = "document", by.y = "linenumber") %>%
+  rename(
+    linenumber = document, 
+    trigram = term
+  ) 
+
+ccngram <- unnested_cc_trigrams %>%
+  count(trigram) %>%
+  slice_max(n, n = 200, with_ties = FALSE) %>%
+  separate(trigram, c("word1", "word2", "word3"), sep = " ", remove = FALSE) %>%
+  mutate(trigram = fct_reorder(trigram, n, .desc = TRUE))
+
+ccngram %>%
+  plot_ly(
+    x = ~n,
+    y = ~trigram,
+    type = "bar",
+    orientation = "h",
+    hoverinfo = "text",
+    text = ~ paste(
+      trigram,
+      "<br> Frequency: ", n
+    ),
+    textposition = "none"
+  ) %>%
+  layout(
+    title = "Top 200 Trigram Frequencies of Chief Complaint Parsed",
+    xaxis = list(title = "Frequency"),
+    yaxis = list(autorange = "reversed", title = "Trigram")
+  ) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+Column 
+-----------------------------------------------------------------------
+
+### Discharge Diagnosis  
+
+```{r DD trigram frequencies, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 50}
+
+unnested_dd_trigrams <- dd_tokens %>%
+  tokens_ngrams(n = 3, concatenator = " ") %>%
+  dfm(tolower = FALSE) %>%
+  tidytext::tidy() %>%
+  as.data.table()  %>%
+  .[, document := gsub("text", "", document, fixed = TRUE)] %>%
+  .[, document := as.numeric(document)] %>%
+  setorderv("document") %>%
+  merge(docvars(dd_tokens), by.x = "document", by.y = "linenumber") %>%
+  rename(
+    linenumber = document, 
+    trigram = term
+  ) 
+
+ddngram <- unnested_dd_trigrams %>%
+  count(trigram) %>%
+  slice_max(n, n = 200, with_ties = FALSE) %>%
+  separate(trigram, c("code1", "code2", "code3"), sep = " ", remove = FALSE) %>%
+  left_join(icd_dictionary, by = c("code1" = "code")) %>%
+  left_join(icd_dictionary, by = c("code2" = "code")) %>%
+  left_join(icd_dictionary, by = c("code3" = "code")) %>%
+  rename(
+    description1 = description.x,
+    description2 = description.y,
+    description3 = description
+  ) %>%
+  distinct() %>%
+  mutate_at(.vars = c("description1", "description2", "description3"), ~ifelse(is.na(.), "ICD-9, SNOMED, or invalid DD code", .)) %>%
+  mutate(trigram = fct_reorder(trigram, n, .desc = TRUE)) 
+
+ddngram %>%
+  plot_ly(
+    x = ~n,
+    y = ~trigram,
+    type = "bar",
+    orientation = "h",
+    hoverinfo = "text",
+    text = ~ paste(
+      code1, ": ", description1,
+      "<br>", code2, ": ", description2,
+      "<br>", code3, ": ", description3,
+      "<br> Frequency: ", n
+    ),
+    textposition = "none"
+  ) %>%
+  layout(
+    title = "Top 200 Trigram Frequencies of Discharge Diagnosis",
+    xaxis = list(title = "Frequency"),
+    yaxis = list(autorange = "reversed", title = "Trigram")
+  ) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+Chief Complaint Co-occurrence {data-navmenu="Term Network Graphs"} 
+=======================================================================
+
+### Chief Complaint Parsed Term Co-occurrence Network Graph
+
+```{r CC network, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 15, fig.height = 10}
+
+cc_unigram_dfm <- cc_tokens %>%
+  tokens_ngrams(n = 1) %>% 
+  dfm(tolower = FALSE) %>%
+  dfm_trim(min_termfreq = 5, termfreq_type = "rank")
+
+cc_fcm <- fcm(cc_unigram_dfm)
+
+edges <- cc_fcm %>%
+  tidytext::tidy() %>%
+  slice_max(count, n = 200) %>%
+  select(
+    from = document, 
+    to = term, 
+    value = count
+  ) %>%
+  mutate(title = value)
+
+cluster_df <- edges %>%
+  graph_from_data_frame(directed = FALSE) %>%
+  cluster_louvain() %>%
+  membership() %>%
+  as.list() %>%
+  as.data.frame() %>%
+  pivot_longer(cols = everything(), names_to = "label", values_to = "group") 
+
+nodes <- unique(c(edges$from, edges$to)) %>%
+  as_tibble() %>%
+  rename(label = value) %>%
+  mutate(
+    id = label,
+    font.size = 30
+  ) %>%
+  left_join(cluster_df, by = "label")
+
+visNetwork(nodes, edges, height = "500px", width = "100%") %>%
+  visPhysics(solver = "forceAtlas2Based") %>%
+  visInteraction(zoomView = FALSE) %>%
+  visNodes(shape = "dot",
+  color = list(background = "#0085AF", border = "#013848", highlight = "#FF8000"),
+  shadow = list(enabled = TRUE, size = 10)) %>%
+  visEdges(color = list(color = "#0085AF", highlight = "#C62F4B")) %>%
+  visOptions(selectedBy = "group",
+             highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+             nodesIdSelection = TRUE) %>%
+  visLayout(randomSeed = 1993)
+
+```
+
+Chief Complaint and Discharge Diagnosis Co-occurrence {data-navmenu="Term Network Graphs"} 
+=======================================================================
+
+### CCDD Term Co-occurrence Network Graph
+
+```{r CCDD network, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 15, fig.height = 10}
+
+edges <- rbind(
+  unnested_cc_unigrams %>%
+    .[, c("word", "linenumber")],
+  unnested_dd_unigrams %>%
+    rename(word = code) %>%
+    .[, c("word", "linenumber")]
+) %>%
+  setorderv("linenumber") %>%
+  unique() %>%
+  pairwise_count(word, linenumber, sort = TRUE) %>%
+  slice_max(n, n = 200) %>%
+  rename(
+    from = item1, 
+    to = item2, 
+    value = n
+  ) %>%
+  mutate(title = value)
+
+cluster_df <- edges %>%
+  graph_from_data_frame(directed = FALSE) %>%
+  cluster_louvain() %>%
+  membership() %>%
+  as.list() %>%
+  as.data.frame() %>%
+  pivot_longer(cols = everything(), names_to = "label", values_to = "group") 
+
+nodes <- unique(c(edges$from, edges$to)) %>%
+  as_tibble() %>%
+  rename(label = value) %>%
+  mutate(
+    id = label,
+    font.size = 30
+  ) %>%
+  left_join(cluster_df, by = "label") %>%
+  left_join(icd_dictionary, by = c("id" = "code")) %>%
+  distinct() %>%
+  mutate(description = ifelse(is.na(description), "ICD-9, SNOMED, or unknown DD code", description)) %>%
+  rename(title = description)
+
+visNetwork(nodes, edges, height = "500px", width = "100%") %>%
+  visPhysics(solver = "forceAtlas2Based") %>%
+  visInteraction(zoomView = FALSE) %>%
+  visNodes(shape = "dot",
+  color = list(background = "#0085AF", border = "#013848", highlight = "#FF8000"),
+  shadow = list(enabled = TRUE, size = 10)) %>%
+  visEdges(color = list(color = "#0085AF", highlight = "#C62F4B")) %>%
+  visOptions(selectedBy = "group",
+             highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+             nodesIdSelection = TRUE) %>%
+  visLayout(randomSeed = 1993)
+
+```
+
+Chief Complaint Correlation {data-navmenu="Term Network Graphs"} 
+=======================================================================
+
+### Chief Complaint Parsed Term Correlation Network Graph
+
+```{r CC correlation network, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 10}
+
+check_row <- unnested_cc_unigrams %>%
+  select(
+    linenumber,
+    word
+  ) %>%
+  group_by(word) %>%
+  filter(n() >= 20) %>%
+  nrow()
+
+check_cor <- unnested_cc_unigrams %>%
+  select(
+    linenumber,
+    word
+  ) %>%
+  group_by(word) %>%
+  {if(check_row != 0) filter(., n() >= 20) else filter(., n() > 0)} %>%
+  ungroup() %>%
+  pairwise_cor(word, linenumber, sort = TRUE) %>%
+  filter(correlation > 0.25)
+
+if (nrow(check_cor) > 10) {
+  
+  cc_cor <- check_cor %>%
+    mutate(
+      pair1 = paste(item1, item2),
+      pair2 = paste(item2, item1)
+    ) %>%
+    filter(!pair1 %in% unnested_cc_bigrams$bigram) %>%
+    filter(!pair2 %in% unnested_cc_bigrams$bigram) %>%
+    mutate_at(.vars = c("item1", "item2"), ~toupper(.))
+  
+  cc_cor_edges <- cc_cor %>%
+    mutate(id = ifelse(item1 < item2, paste(item1, item2),  paste(item2, item1))) %>%
+    distinct(id, .keep_all = TRUE) %>%
+    select(
+      from = item1, 
+      to = item2, 
+      value = correlation
+    ) %>%
+    mutate(title = value)
+  
+  cc_cor_cluster_df <- cc_cor_edges %>%
+    graph_from_data_frame(directed = FALSE) %>%
+    cluster_louvain() %>%
+    membership() %>%
+    as.list() %>%
+    as.data.frame() %>%
+    pivot_longer(cols = everything(), names_to = "label", values_to = "group")
+  
+  cc_cor_nodes <- unique(c(cc_cor_edges$from, cc_cor_edges$to)) %>%
+    as_tibble() %>%
+    rename(label = value) %>%
+    mutate(
+      id = label, 
+      font.size = 30
+    ) %>%
+    left_join(cc_cor_cluster_df, by = "label")
+  
+  visNetwork(
+    cc_cor_nodes, 
+    cc_cor_edges, 
+    height = "500px", 
+    width = "100%",
+    main = list(
+      text = "Pairs of terms with at least a 0.25 correlation of appearing within the same chief complaint. Consecutive term pairs/bigrams removed.",
+      style = "font-family:Arial;font-size:15px;font-weight:bold;text-align:center"
+    )
+  ) %>%
+    visPhysics(solver = "forceAtlas2Based") %>%
+    visInteraction(zoomView = FALSE) %>%
+    visNodes(
+      shape = "dot", 
+      color = list(background = "#0085AF", border = "#013848", highlight = "#FF8000"), 
+      shadow = list(enbaled = TRUE, size = 10)
+    ) %>%
+    visEdges(color = list(color = "#0085AF", highlight = "#C62F4B")) %>%
+    visOptions(
+      selectedBy = "group", 
+      highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+      nodesIdSelection = TRUE
+    ) %>%
+    visLayout(randomSeed = 1993)
+} else {
+  cat("Not a sufficient number of terms to render network graph.")
+}
+
+```
+
+### Chief Complaint Parsed Term Correlation Search Table
+
+```{r search table, echo = FALSE, warning = FALSE, message = FALSE}
+
+if (nrow(check_cor) > 10) {
+cc_cor %>%
+  select(
+    `Term 1` = item1, 
+    `Term 2` = item2, 
+    `Correlation` = correlation
+  ) %>%
+  mutate(
+    `Term 1` = toupper(`Term 1`),
+    `Term 2` = toupper(`Term 2`),
+    `Correlation` = format(round(`Correlation`, 3), nsmall = 3)
+  ) %>%
+  datatable(
+    filter = list(position = "top", clear = FALSE),
+    options = list(
+      pageLength = 40, 
+      scrollY = 700, 
+      columnDefs = list(list(className = "dt-left", targets = "_all"))
+    )
+  )
+} else {
+  cat("Not a sufficient number of terms to render table.")
+}
+
+```
+
+Discharge Diagnosis Correlation {data-navmenu="Term Network Graphs"} 
+=======================================================================
+
+### DD Term Correlation Network Graph
+
+```{r DD correlation network, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 10}
+
+check_row <- unnested_dd_unigrams %>%
+    select(
+    linenumber,
+    code
+  ) %>%
+  inner_join(icd_dictionary, by = "code") %>%
+  distinct() %>%
+  group_by(code) %>%
+  filter(n() >= 20) %>%
+  nrow()
+
+check_cor <- unnested_dd_unigrams %>%
+  select(
+    linenumber, 
+    code
+  ) %>%
+  inner_join(icd_dictionary, by = "code") %>%
+  distinct() %>%
+  group_by(code) %>%
+  {if(check_row != 0) filter(., n() >= 20) else filter(., n() > 0)} %>%
+  ungroup() %>%
+  pairwise_cor(code, linenumber, sort = TRUE) %>%
+  filter(correlation > 0.25) 
+
+if (nrow(check_cor) > 10) {
+  
+  dd_cor <- check_cor %>%
+    mutate_at(.vars = c("item1", "item2"), ~toupper(.))
+  
+  dd_cor_edges <- dd_cor %>%
+    mutate(id = ifelse(item1 < item2, paste(item1, item2), paste(item2, item1))) %>%
+    distinct(id, .keep_all = TRUE) %>%
+    select(
+      from = item1, 
+      to = item2,
+      value = correlation
+    ) %>%
+    mutate(title = value)
+  
+  dd_cor_cluster_df <- dd_cor_edges %>%
+    graph_from_data_frame(directed = FALSE) %>%
+    cluster_louvain() %>%
+    membership() %>%
+    as.list() %>%
+    as.data.frame() %>%
+    pivot_longer(cols = everything(), names_to = "label", values_to = "group") %>%
+    group_by(group) %>%
+    filter(n() >= 3) %>%
+    ungroup() %>%
+    arrange(group) %>%
+    group_by(group) %>%
+    mutate(group = cur_group_id()) %>%
+    ungroup()
+  
+  dd_cor_edges2 <- dd_cor_edges %>%
+    filter(from %in% dd_cor_cluster_df$label | to %in% dd_cor_cluster_df$label)
+  
+  dd_cor_nodes <- unique(c(dd_cor_edges$from, dd_cor_edges$to)) %>%
+    as_tibble() %>%
+    rename(label = value) %>%
+    mutate(
+      id = label, 
+      font.size = 30
+    ) %>%
+    inner_join(dd_cor_cluster_df, by = "label") %>%
+    left_join(icd_dictionary, by = c("id" = "code")) %>%
+    distinct() %>%
+    rename(title = description)
+  
+  visNetwork(
+    dd_cor_nodes, 
+    dd_cor_edges2, 
+    height = "500px", 
+    width = "100%",
+    main = list(
+      text = "Pairs of codes with at least a 0.25 correlation of appearing within the same Discharge Diagnosis.",
+      style = "font-family:Arial;font-size:15px;font-weight:bold;text-align:center"
+    )
+  ) %>%
+    visPhysics(solver = "forceAtlas2Based") %>%
+    visInteraction(zoomView = FALSE) %>%
+    visNodes(
+      shape = "dot", 
+      color = list(background = "#0085AF", border = "#013848", highlight = "#FF8000"), 
+      shadow = list(enbaled = TRUE, size = 10)
+    ) %>%
+    visEdges(color = list(color = "#0085AF", highlight = "#C62F4B")) %>%
+    visOptions(
+      selectedBy = "group", 
+      highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+      nodesIdSelection = TRUE
+    ) %>%
+    visLayout(randomSeed = 1993)
+} else {
+  cat("Not a sufficient number of codes to render network graph.")
+}
+
+```
+
+### DD Term Correlation Search Table 
+
+```{r DD search table, echo = FALSE, warning = FALSE, message = FALSE}
+
+if (nrow(check_cor) > 10) {
+
+dd_cor %>%
+  filter(item1 %in% dd_cor_nodes$id) %>%
+  left_join(icd_dictionary, by = c("item1" = "code")) %>%
+  rename(description1 = description) %>%
+  left_join(icd_dictionary, by = c("item2" = "code")) %>%
+  rename(description2 = description) %>%
+  mutate(
+    item1 = paste0(item1, ": ", description1),
+    item2 = paste0(item2, ": ", description2)
+  ) %>%
+  select(
+    `Code 1` = item1, 
+    `Code 2` = item2, 
+    `Correlation` = correlation
+  ) %>%
+  mutate(`Correlation` = format(round(`Correlation`, 3), nsmall = 3)) %>%
+  datatable(
+    filter = list(position = "top", clear = FALSE),
+    options = list(
+      pageLength = 40, 
+      scrollY = 700, 
+      columnDefs = list(list(className = "dt-left", targets = "_all"))
+    )
+  )
+  
+} else {
+  cat("Not a sufficient number of codes to render table.")
+}
+
+```
+
+```{r ngram analysis, echo = FALSE, warning = FALSE, message = FALSE}
+
+cc_unigram_analysis <- unnested_cc_unigrams %>%
+  mutate(time_floor = floor_date(date, unit = "1 week")) %>%
+  count(time_floor, word) %>%
+  complete(word, time_floor, fill = list(n = 0)) %>%
+  group_by(time_floor) %>%
+  mutate(time_total = sum(n)) %>%
+  group_by(word) %>%
+  mutate(ngram_total = sum(n)) %>%
+  rename(count = n) %>%
+  filter(ngram_total > 30) %>%
+  mutate(
+    frequency = (count / time_total),
+    frequency = ifelse(is.infinite(frequency), 0, frequency),
+    frequency = ifelse(is.nan(frequency), 0, frequency)
+  ) %>%
+  nest(data = -word) %>%
+  mutate(
+    models = map(data, ~ glm(cbind(count, time_total - count) ~ time_floor, ., family = "binomial") %>% tidy())
+  ) %>%
+  unnest(models)
+
+if (nrow(cc_unigram_analysis) > 0) {
+  cc_unigram_filtered <- cc_unigram_analysis %>%
+    filter(term == "time_floor") %>%
+    mutate(adjusted.p.value = p.adjust(p.value)) %>%
+    filter(adjusted.p.value < 0.01) %>%
+    arrange(adjusted.p.value) %>%
+    unnest(data) %>%
+    mutate(word = toupper(word))
+} else {
+  cc_unigram_filtered <- cc_unigram_analysis %>%
+    mutate(statistic = NA)
+}
+
+cc_bigram_analysis <- unnested_cc_bigrams %>%
+  mutate(time_floor = floor_date(date, unit = "1 week")) %>%
+  count(time_floor, bigram) %>%
+  complete(bigram, time_floor, fill = list(n = 0)) %>%
+  group_by(time_floor) %>%
+  mutate(time_total = sum(n)) %>%
+  group_by(bigram) %>%
+  mutate(ngram_total = sum(n)) %>%
+  rename(count = n) %>%
+  filter(ngram_total > 30) %>%
+  mutate(
+    frequency = (count / time_total),
+    frequency = ifelse(is.infinite(frequency), 0, frequency),
+    frequency = ifelse(is.nan(frequency), 0, frequency)
+  ) %>%
+  nest(data = -bigram) %>%
+  mutate(
+    models = map(data, ~ glm(cbind(count, time_total - count) ~ time_floor, ., family = "binomial") %>% tidy())
+  ) %>%
+  unnest(models)
+
+if (nrow(cc_bigram_analysis) > 0) {
+  cc_bigram_filtered <- cc_bigram_analysis %>%
+    filter(term == "time_floor") %>%
+    mutate(adjusted.p.value = p.adjust(p.value)) %>%
+    filter(adjusted.p.value < 0.01) %>%
+    arrange(adjusted.p.value) %>%
+    unnest(data) %>%
+    mutate(bigram = toupper(bigram))
+} else {
+  cc_bigram_filtered <- cc_bigram_analysis %>%
+    mutate(statistic = NA)
+}
+
+dd_unigram_analysis <- unnested_dd_unigrams %>%
+  mutate(time_floor = floor_date(date, unit = "1 week")) %>%
+  rename(word = code) %>%
+  count(time_floor, word) %>%
+  complete(word, time_floor, fill = list(n = 0)) %>%
+  group_by(time_floor) %>%
+  mutate(time_total = sum(n)) %>%
+  group_by(word) %>%
+  mutate(ngram_total = sum(n)) %>%
+  rename(count = n) %>%
+  filter(ngram_total > 30) %>%
+  mutate(
+    frequency = (count / time_total),
+    frequency = ifelse(is.infinite(frequency), 0, frequency),
+    frequency = ifelse(is.nan(frequency), 0, frequency)
+  ) %>%
+  nest(data = -word) %>%
+  mutate(
+    models = map(data, ~ glm(cbind(count, time_total - count) ~ time_floor, ., family = "binomial") %>% tidy())
+  ) %>%
+  unnest(models)
+
+if (nrow(dd_unigram_analysis) > 0) {
+  dd_unigram_filtered <- dd_unigram_analysis %>%
+    filter(term == "time_floor") %>%
+    mutate(adjusted.p.value = p.adjust(p.value)) %>%
+    filter(adjusted.p.value < 0.01) %>%
+    arrange(adjusted.p.value) %>%
+    unnest(data) %>%
+    mutate(word = toupper(word)) %>%
+    inner_join(icd_dictionary, by = c("word" = "code")) %>%
+    distinct()
+} else {
+  dd_unigram_filtered <- dd_unigram_analysis %>%
+    mutate(statistic = NA)
+}
+
+dd_bigram_analysis <- unnested_dd_bigrams %>%
+  mutate(time_floor = floor_date(date, unit = "1 week")) %>%
+  count(time_floor, bigram) %>%
+  complete(bigram, time_floor, fill = list(n = 0)) %>%
+  group_by(time_floor) %>%
+  mutate(time_total = sum(n)) %>%
+  group_by(bigram) %>%
+  mutate(ngram_total = sum(n)) %>%
+  rename(count = n) %>%
+  filter(ngram_total > 30) %>%
+  mutate(
+    frequency = (count / time_total),
+    frequency = ifelse(is.infinite(frequency), 0, frequency),
+    frequency = ifelse(is.nan(frequency), 0, frequency)
+  ) %>%
+  separate(bigram, c("code1", "code2"), sep = " ", remove = FALSE) %>%
+  mutate(
+    code1 = toupper(code1),
+    code2 = toupper(code2)
+  ) %>%
+  nest(data = -bigram) %>%
+  mutate(
+    models = map(data, ~ glm(cbind(count, time_total - count) ~ time_floor, ., family = "binomial") %>% tidy())
+  ) %>%
+  unnest(models)
+
+if (nrow(dd_bigram_analysis) > 0) {
+  dd_bigram_filtered <- dd_bigram_analysis %>%
+    filter(term == "time_floor") %>%
+    mutate(adjusted.p.value = p.adjust(p.value)) %>%
+    filter(adjusted.p.value < 0.01) %>%
+    arrange(adjusted.p.value) %>%
+    unnest(data) %>%
+    mutate(bigram = toupper(bigram)) %>%
+    separate(bigram, c("code1", "code2"), remove = FALSE) %>%
+    inner_join(icd_dictionary, by = c("code1" = "code")) %>%
+    inner_join(icd_dictionary, by = c("code2" = "code")) %>%
+    rename(
+      description1 = description.x,
+      description2 = description.y
+    ) %>%
+    distinct() 
+} else {
+  dd_bigram_filtered <- dd_bigram_analysis %>%
+    mutate(statistic = NA)
+}
+
+cc_unigrams_increasing <- cc_unigram_filtered %>%
+  filter(statistic > 0)
+
+cc_unigrams_decreasing <- cc_unigram_filtered %>%
+  filter(statistic < 0)
+
+cc_bigrams_increasing <- cc_bigram_filtered %>%
+  filter(statistic > 0)
+
+cc_bigrams_decreasing <- cc_bigram_filtered %>%
+  filter(statistic < 0)
+
+dd_unigrams_increasing <- dd_unigram_filtered %>%
+  filter(statistic > 0)
+
+dd_unigrams_decreasing <- dd_unigram_filtered %>%
+  filter(statistic < 0)
+
+dd_bigrams_increasing <- dd_bigram_filtered %>%
+  filter(statistic > 0)
+
+dd_bigrams_decreasing <- dd_bigram_filtered %>%
+  filter(statistic < 0)
+
+ht1 <- max(length(unique(cc_unigrams_increasing$word)), length(unique(dd_unigrams_increasing$word))) * 4
+ht2 <- max(length(unique(cc_unigrams_decreasing$word)), length(unique(dd_unigrams_decreasing$word))) * 4
+
+ht3 <- max(length(unique(cc_bigrams_increasing$bigram)), length(unique(dd_bigrams_increasing$bigram))) * 4
+ht4 <- max(length(unique(cc_bigrams_decreasing$bigram)), length(unique(dd_bigrams_decreasing$bigram))) * 4
+```
+
+Increasing Unigrams {data-navmenu="Significant Change in Term Usage Over Time"} 
+=======================================================================
+
+Trends represent the proportion of term occurrences on a weekly time resolution. The numerator is the number of occurrences of the term in a specific week, while the denominator is the sum of all term frequencies in that week. A binomial model is fit to each time series to determine if term occurrence has changed significantly over time. Terms with a positive slope (test statistic) and adjusted p-value < 0.01 are categorized as having significant increase, while terms with a negative slope and adjusted p-value < 0.01 are categorized as having significant decrease.
+
+Column 
+-----------------------------------------------------------------------
+
+### Change in Individual CC Unigram Trends - Increasing
+
+```{r CC increasing unigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht1}
+
+pal <- c("#003C67FF", "#4A6990FF")
+
+if (nrow(cc_unigrams_increasing) > 0) {
+  tab_gg <- cc_unigrams_increasing %>%
+    select(word, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x) {
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(
+          x = "",
+          y = ""
+        ) +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+    }))
+  
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("word", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      word = "Chief Complaint Unigram",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box() %>%
+    colformat_double(digits = 2)
+  
+  ft_gg
+} else {
+  cat("No significantly increasing unigrams found.")
+}
+``` 
+
+Column 
+-----------------------------------------------------------------------
+
+### Change in Individual DD Unigram Trends - Increasing
+
+```{r DD increasing unigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht1}
+
+if (nrow(dd_unigrams_increasing) > 0) {
+  tab_gg <- dd_unigrams_increasing %>%
+    select(word, description, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x) {
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(
+          x = "",
+          y = ""
+        ) +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+    }))
+  
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("word", "description", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      word = "ICD-10 Unigram",
+      description = "Description",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box() %>%
+    colformat_double(digits = 2)
+  
+  ft_gg
+} else {
+  cat("No significantly increasing unigrams found.")
+}
+```
+
+Decreasing Unigrams {data-navmenu="Significant Change in Term Usage Over Time"} 
+=======================================================================
+
+Trends represent the proportion of term occurrences on a weekly time resolution. The numerator is the number of occurrences of the term in a specific week, while the denominator is the sum of all term frequencies in that week. A binomial model is fit to each time series to determine if term occurrence has changed significantly over time. Terms with a positive slope (test statistic) and adjusted p-value < 0.01 are categorized as having significant increase, while terms with a negative slope and adjusted p-value < 0.01 are categorized as having significant decrease.
+
+Column 
+-----------------------------------------------------------------------
+
+### Change in Individual CC Unigram Trends - Decreasing
+
+```{r CC decreasing unigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht2}
+
+if (nrow(cc_unigrams_decreasing) > 0) {
+  tab_gg <- cc_unigrams_decreasing %>%
+    select(word, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x) {
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(
+          x = "",
+          y = ""
+        ) +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+    }))
+  
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("word", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      word = "Chief Complaint Unigram",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box() %>%
+    colformat_double(digits = 2)
+  
+  ft_gg
+} else {
+  cat("No significantly decreasing unigrams found.")
+}
+```  
+
+Column 
+-----------------------------------------------------------------------
+
+### Change in Individual DD Term Trends - Decreasing
+
+```{r DD decreasing unigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht2}
+
+if (nrow(dd_unigrams_decreasing) > 0) {
+  tab_gg <- dd_unigrams_decreasing %>%
+    select(word, description, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x) {
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(
+          x = "",
+          y = ""
+        ) +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+    }))
+  
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("word", "description", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      word = "ICD-10 Unigram",
+      description = "Description",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box() %>%
+    colformat_double(digits = 2)
+  
+  ft_gg
+} else {
+  cat("No significantly decreasing unigrams found.")
+}
+```
+
+Increasing Bigrams {data-navmenu="Significant Change in Term Usage Over Time"} 
+=======================================================================
+
+Trends represent the proportion of bigram occurrences on a weekly time resolution. The numerator is the number of occurrences of the bigram in a specific week, while the denominator is the sum of all bigram frequencies in that week. A binomial model is fit to each time series to determine if bigram occurrence has changed significantly over time. Bigrams with a positive slope (test statistic) and adjusted p-value < 0.01 are categorized as having significant increase, while bigrams with a negative slope and adjusted p-value < 0.01 are categorized as having significant decrease.
+
+Column 
+-----------------------------------------------------------------------
+
+### Change in CC Bigram Trends - Increasing
+
+```{r CC increasing bigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht3}
+
+pal <- c("#003C67FF", "#4A6990FF")
+
+if (nrow(cc_bigrams_increasing) > 0) {
+  tab_gg <- cc_bigrams_increasing %>%
+    select(bigram, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x) {
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(
+          x = "",
+          y = ""
+        ) +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+    }))
+  
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("bigram", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      bigram = "Chief Complaint Bigram",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box() %>%
+    colformat_double(digits = 2)
+  
+  ft_gg
+} else {
+  cat("No significantly increasing bigrams found.")
+}
+``` 
+
+Column 
+-----------------------------------------------------------------------
+
+### Change in DD Bigram Trends - Increasing
+
+```{r DD increasing bigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht3}
+
+if (nrow(dd_bigrams_increasing) > 0) {
+  tab_gg <- dd_bigrams_increasing %>%
+    select(bigram, description1, description2, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x) {
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(
+          x = "",
+          y = ""
+        ) +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+    }))
+  
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("bigram", "description1", "description2", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      bigram = "ICD-10 Bigram",
+      description1 = "Description 1",
+      description2 = "Description 2",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box() %>%
+    colformat_double(digits = 2)
+  
+  ft_gg
+} else {
+  cat("No significantly increasing bigrams found.")
+}
+```
+
+Decreasing Bigrams {data-navmenu="Significant Change in Term Usage Over Time"} 
+=======================================================================
+
+Trends represent the proportion of bigram occurrences on a weekly time resolution. The numerator is the number of occurrences of the bigram in a specific week, while the denominator is the sum of all bigram frequencies in that week. A binomial model is fit to each time series to determine if bigram occurrence has changed significantly over time. Bigrams with a positive slope (test statistic) and adjusted p-value < 0.01 are categorized as having significant increase, while bigrams with a negative slope and adjusted p-value < 0.01 are categorized as having significant decrease.
+
+Column 
+-----------------------------------------------------------------------
+
+### Change in CC Bigram Trends - Decreasing
+
+```{r CC decreasing bigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht4}
+
+pal <- c("#003C67FF", "#4A6990FF")
+
+if (nrow(cc_bigrams_decreasing) > 0) {
+  tab_gg <- cc_bigrams_decreasing %>%
+    select(bigram, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x) {
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(
+          x = "",
+          y = ""
+        ) +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+    }))
+  
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("bigram", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      bigram = "Chief Complaint Bigram",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box() %>%
+    colformat_double(digits = 2)
+  
+  ft_gg
+} else {
+  cat("No significantly decreasing bigrams found.")
+}
+``` 
+
+Column 
+-----------------------------------------------------------------------
+
+### Change in DD Bigram Trends - Decreasing
+
+```{r DD decreasing bigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht4}
+
+if (nrow(dd_bigrams_decreasing) > 0) {
+  tab_gg <- dd_bigrams_decreasing %>%
+    select(bigram, description1, description2, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x) {
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(
+          x = "",
+          y = ""
+        ) +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+    }))
+  
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("bigram", "description1", "description2", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      bigram = "ICD-10 Bigram",
+      description1 = "Description 1",
+      description2 = "Description 2",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box() %>%
+    colformat_double(digits = 2)
+  
+  ft_gg
+} else {
+  cat("No significantly decreasing bigrams found.")
+}
+```
