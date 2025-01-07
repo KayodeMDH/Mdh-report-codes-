@@ -1,0 +1,523 @@
+library(Rnssp)
+library(tidyverse)
+library(janitor)
+library(openxlsx)
+
+#Replace USERNAME with your unsername
+# > Setup---------------------------------------------------------------------------------------------------------------
+# TODO Add folder name to the end of gl_path below (i.e. USERNAME/<folder name here>)
+gl_path <- "/opt/sas/shared/homes/USERNAME/Drug_overdose_alert_Folder"
+Sys.setenv(RSTUDIO_PANDOC="/usr/lib/rstudio-server/bin/quarto/bin/tools")
+
+setwd(gl_path)
+
+load("~/myProfile.rda") 
+
+end_date <- Sys.Date()
+endDate <- format(end_date, "%d%b%y")
+start_date <- end_date - 29
+startDate <- format(start_date, "%d%b%y")
+
+# > Pull up-to-date list of MN facilities and their regions-------------------------------------------------------------
+# Credentials
+decodeProfile <- function(profile){ 
+  list(
+    "username" = safer::decrypt_string(
+      profile$.__enclos_env__$private$..username$value, 
+      profile$.__enclos_env__$private$..__$value 
+    ), 
+    "password" = safer::decrypt_string(
+      profile$.__enclos_env__$private$..password$value, 
+      profile$.__enclos_env__$private$..__$value
+    ) 
+  ) 
+}
+
+dec <- decodeProfile(myProfile) 
+
+con <- RODBC::odbcConnect(
+  "BioSense_Platform",
+  uid = paste0("biosense\\", dec$username),
+  pwd = dec$password
+)
+
+site <- "MN"
+
+MFT <- RODBC::sqlQuery(
+  con,
+  paste0(
+    "SELECT *
+                                   FROM ",
+    site,
+    "_MFT"
+  )
+)
+
+mn_facilities <- MFT %>%
+  clean_names() %>%
+  filter(facility_status == "Active") %>%
+  select(
+    display_name = facility_display_name,
+    county = facility_county,
+    region = essence_region
+  ) 
+
+RODBC::odbcClose(con)
+
+# > Pull MN facility-level time series with default ESSENCE EWMA/Regression switch detector applied---------------------
+url <- paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/timeSeries?datasource=va_hosp&startDate=", startDate, "&medicalGroupingSystem=essencesyndromes&userId=2362&endDate=", endDate, "&percentParam=noPercent&site=904&aqtTarget=TimeSeries&ccddCategory=cdc%20all%20drug%20v2&geographySystem=hospital&detector=probrepswitch&timeResolution=daily&hasBeenE=1&stratVal=&multiStratVal=geography&graphOnly=true&numSeries=0&graphOptions=multipleSmall&seriesPerYear=false&nonZeroComposite=false&removeZeroSeries=true&startMonth=January&stratVal=&multiStratVal=geography&graphOnly=true&numSeries=0&graphOptions=multipleSmall&seriesPerYear=false&startMonth=January&nonZeroComposite=false")
+
+api_data <- myProfile$get_api_data(url) %>%
+  pluck("timeSeriesData") %>% 
+  clean_names() %>%
+  mutate(date = as.Date(date)) 
+
+all_facilities <- sort(unique(api_data$hospital_display))
+
+alerting_facilities <- api_data %>%
+  select(
+    date, 
+    facility_name = hospital_display,
+    facility_id = hospital_id,
+    count,
+    color
+  ) %>%
+  mutate(alert = ifelse(color %in% c("yellow", "red"), TRUE, FALSE)) %>%
+  filter(alert)
+
+alert_summary1 <- api_data %>%
+  select(
+    date, 
+    facility_name = hospital_display,
+    facility_id = hospital_id,
+    count,
+    color
+  ) %>%
+  mutate(alert = ifelse(color %in% c("yellow", "red"), TRUE, FALSE)) %>%
+  group_by(facility_id, grp = with(rle(alert), rep(seq_along(lengths), lengths))) %>%
+  mutate(
+    period_total = max(seq_along(grp)), 
+    counter = seq_along(grp), 
+    start_date = min(date)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    period_total = if_else(!alert, NA, period_total),
+    counter = if_else(!alert, NA, counter),
+    start_date = if_else(!alert, NA, start_date)
+  ) %>%
+  select(
+    facility_name,
+    facility_id,
+    grp,
+    period_total,
+    start_date
+  ) %>%
+  distinct() %>%
+  filter(!is.na(start_date)) %>%
+  group_by(facility_id) %>%
+  mutate(
+    n_seq_alerts = sum(period_total > 1),
+    longest_seq = max(period_total)
+  )
+
+alert_summary2 <- alert_summary1 %>%
+  filter(period_total > 1) %>%
+  filter(start_date == max(start_date)) %>%
+  select(
+    facility_name,
+    facility_id,
+    most_recent_seq = start_date
+  )
+
+alert_summary3 <- api_data %>%
+  select(
+    date, 
+    facility_name = hospital_display,
+    facility_id = hospital_id,
+    count,
+    color
+  ) %>%
+  mutate(alert = ifelse(color %in% c("yellow", "red"), TRUE, FALSE)) %>%
+  filter(date >= max(date) - 6) %>%
+  filter(alert) %>%
+  group_by(facility_name, facility_id) %>%
+  mutate(
+    recent_alert_flag = case_when(
+      all(color == "yellow") ~ "yellow",
+      TRUE ~ "red"
+    )
+  ) %>%
+  ungroup() %>%
+  distinct(facility_name, facility_id, recent_alert_flag)
+
+alert_summary <- alert_summary1 %>%
+  left_join(alert_summary2, by = c("facility_name", "facility_id")) %>%
+  distinct(facility_name, facility_id, n_seq_alerts, longest_seq, most_recent_seq) %>%
+  left_join(alert_summary3, by = c("facility_name", "facility_id"))
+
+# > Pull data details for alerting facilities on day of alert-----------------------------------------------------------
+if (nrow(alerting_facilities) > 0) {
+  
+  total_api_pulls <- n_distinct(alerting_facilities$date)
+  
+  alerts_data_details <- alerting_facilities %>%
+    arrange(date) %>%
+    mutate(api_date = format(date, "%d%b%y")) %>%
+    group_by(date) %>%
+    mutate(date_id = cur_group_id()) %>%
+    ungroup() %>%
+    nest(data = -date) %>%
+    mutate(
+      data_pull = map(.x = data, function (.x) {
+        
+        pct_complete <- scales::percent(unique(.x$date_id) / total_api_pulls, accuracy = 0.01)
+        
+        cat("API pull", unique(.x$date_id), "out of of", total_api_pulls, ": ", pct_complete, " complete...")
+        
+        facilities <- .x$facility_id %>%
+          paste0(., collapse = "&geography=") %>%
+          paste0("&geography=", .)
+        
+        start_end_date <- unique(.x$api_date)
+        
+        fields <- c(
+          "Date",
+          "Age",
+          "Sex",
+          "Patient_City",
+          "Patient_Zip",
+          "Admit_Reason_Combo",
+          "CCDD",
+          "CCDDCategory_flat",
+          "HospitalName",
+          "HospitalRegion", 
+          "DeathDateTime", 
+          "DeathIndicator",
+          "State",
+          "Region"
+        ) %>%
+          paste0(., collapse = "&field=") %>%
+          paste0("&field=", .)
+        
+        url_dd <- paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/dataDetails?endDate=", start_end_date, facilities, "&percentParam=noPercent&datasource=va_hosp&startDate=", start_end_date, "&medicalGroupingSystem=essencesyndromes&userId=5129&aqtTarget=DataDetails&ccddCategory=cdc%20all%20drug%20v2&geographySystem=hospital&detector=nodetectordetector&timeResolution=daily&hasBeenE=1", fields)
+        
+        myProfile$get_api_data(url_dd) %>%
+          pluck("dataDetails")
+        
+      })
+    ) %>%
+    select(-date) %>%
+    unnest(data_pull) %>%
+    unnest(data) %>%
+    filter(facility_name == HospitalName) %>%
+    select(
+      -facility_name,
+      -api_date,
+      -date_id
+    ) %>%
+    relocate(c(HospitalName, facility_id, State, Region))
+  
+  # > Build Excel workbook output---------------------------------------------------------------------------------------
+  wb <- createWorkbook("MN_All_Drug_Alerting_Report.xlsx")
+  
+  # mn_facilities <- read_csv("mn_facilities.csv")
+  
+  columnstyle <- createStyle(fontName = "Arial", fontSize = 10, halign = "center", valign = "center", textDecoration = "bold", wrapText = TRUE, border = "TopBottomLeftRight", borderStyle = "thin", borderColour = "black", fontColour = "white", fgFill = "#203764")
+  
+  cellstyle <- createStyle(fontName = "Arial", fontSize = 10, border = "TopBottomLeftRight", borderStyle = "thin", borderColour = "black")
+  
+  workbook_data <- alerts_data_details %>%
+    mutate(Date = as.Date(Date, "%m/%d/%Y")) %>%
+    arrange(HospitalName, Date) %>%
+    rename(
+      Drug_Type = Admit_Reason_Combo, 
+      Facility_Name = HospitalName
+    ) %>%
+    group_split(Facility_Name, HospitalRegion) %>%
+    map_df(~.x %>% group_by(Date, count) %>% mutate(alert_id = cur_group_id())) %>%
+    ungroup() %>%
+    relocate(alert_id, .after = alert)
+  
+  facility_summary <- workbook_data %>%
+    mutate(Facility_Name = factor(Facility_Name, levels = all_facilities)) %>%
+    group_by(Facility_Name, HospitalRegion) %>%
+    summarise(
+      n_alerts = max(alert_id),
+      date_last_alert = max(Date),
+      n_visits = n()
+    ) %>%
+    ungroup() %>%
+    complete(Facility_Name, fill = list(n_alerts = 0, date_last_alert = NA , n_visits = 0)) %>%
+    mutate(
+      week_date = end_date - 6,
+      recent_alert = ifelse(date_last_alert >= week_date, TRUE, FALSE),
+      recent_alert = ifelse(is.na(recent_alert), FALSE, recent_alert)
+    ) %>%
+    select(-week_date) %>%
+    arrange(Facility_Name) %>%
+    left_join(mn_facilities, by = c("Facility_Name" = "display_name")) %>%
+    mutate(HospitalRegion = region) %>%
+    select(
+      -county,
+      -region
+    ) %>%
+    left_join(alert_summary, by = c("Facility_Name" = "facility_name")) %>%
+    select(-facility_id) %>%
+    mutate(
+      n_seq_alerts = if_else(is.na(n_seq_alerts), 0, n_seq_alerts),
+      longest_seq = if_else(longest_seq == 1, NA, longest_seq)
+    ) %>%
+    relocate(recent_alert_flag, .after = recent_alert) %>%
+    mutate(
+      recent_alert_flag = case_when(
+        recent_alert_flag == "yellow" ~ "Warning",
+        recent_alert_flag == "red" ~ "Alert",
+        TRUE ~ "None"
+      )
+    )
+  
+  facility_crosswalk <- data.frame(
+    facility = all_facilities
+  ) %>%
+    mutate(
+      tab_name = substr(str_squish(gsub("Hospital|Medical|Center|MN-", "", facility)), 1, 31),
+      tab_name = gsub("'", "", tab_name)
+    )
+  
+  addWorksheet(wb, "Introduction", tabColour = "#203764", zoom = 85)
+  
+  titleStyle <- createStyle(fontName = "Arial", fontSize = 10, fontColour = "white", halign = "left", valign = "top", border = "TopBottomLeftRight", borderStyle = "thin", borderColour = "#203764", fgFill = "#203764", textDecoration = "bold", wrapText = TRUE)
+  
+  # Set title header of introduction tab
+  setColWidths(wb, sheet = 1, cols = 1, widths = 50)
+  setColWidths(wb, sheet = 1, cols = 2, widths = 40)
+  setColWidths(wb, sheet = 1, cols = 3, widths = 12)
+  setColWidths(wb, sheet = 1, cols = 4, widths = 20)
+  setColWidths(wb, sheet = 1, cols = 5, widths = 10)
+  setColWidths(wb, sheet = 1, cols = 6:9, widths = 18)
+  setRowHeights(wb, sheet = 1, rows = 1, heights = 45)
+  
+  mergeCells(wb, sheet = 1, cols = 1:9, rows = 1)
+  
+  addStyle(wb, sheet = 1, titleStyle, rows = 1, cols = 1:9)
+  
+  wb_title <- paste0("Minnesota Alerting Report for CDC All Drug v2\nReport generated on: ", format(Sys.Date(), "%B %d, %Y"))
+  
+  writeData(wb, sheet = 1, wb_title, startRow = 1)
+  
+  # Description header
+  mergeCells(wb, sheet = 1, cols = 1:9, rows = 3)
+  addStyle(wb, sheet = 1, titleStyle, rows = 3, cols = 1:9)
+  
+  writeData(wb, sheet = 1, "Description", startRow = 3)
+  
+  # Description text
+  textStyle <- createStyle(fontName = "Arial", fontSize = 10, halign = "left", valign = "top", border = "TopBottomLeftRight", borderStyle = "thin", borderColour = "#203764", wrapText = TRUE)
+  
+  mergeCells(wb, sheet = 1, cols = 1:9, rows = 4)
+  setRowHeights(wb, sheet = 1, rows = 4, heights = 200)
+  
+  addStyle(wb, sheet = 1, textStyle, rows = 4, cols = 1:9)
+  
+  description <- paste0("This report includes line-level data details for NSSP-ESSENCE emergency department encounters identified by the CDC All Drug v2 CCDD category that are associated with temporal alerts signaled by the default ESSENCE EWMA/Regression switch algorithm. The subset of data details fields included in this report are HospitalName, HospitalID, State, Region, Date, Age, Sex, Patient_City, Patient_Zip, Admit_Reason_Combo, CCDD, CCDDCategory_Flat, DeathDateTime, and DeathIndicator. Records associated with alerts over the most recent 30 days are organized by facility tab. This report includes data from ", format(start_date, "%B %d, %Y"), " to ", format(end_date, "%B %d, %Y"), "\n\n", "Tabs for all Minnesota emergency department facilities are included in this report. Tabs colored red represent facilities with at least one record associated with an alert occurring over the last 30 days. Grey tabs represent facilities with no alerts in the last 30 days and do not contain any data.", "\n\n", "N Alerts: Total number of alerts for each facility over the last 30 days", "\n", "N Visits: Total number of encounters (records) associated with alerts", "\n", "Recent Alert: Values indicate whether an alert or warning occurred over the last 7 days", "\n", "Sequences of Consecutive Alerts: Number of sequences of alerts occurring over at least 2 consecutive days", "\n", "Longest Sequence: For all sequences of consecutive alerts occurring over 2 or more days, the longest sequence of consecutive alerts", "\n", "Most Recent Sequence: Start date for the most recent sequence of consecutive alerts occurring over 2 or more days")
+  
+  writeData(wb, sheet = 1, description, startRow = 4)
+  
+  # Facility crosswalk
+  addStyle(wb, sheet = 1, titleStyle, rows = 5, cols = 1:9)
+  
+  # writeData(wb, sheet = 1, "Facility Tab Name Crosswalk", startRow = 6)
+  
+  addStyle(wb, sheet = 1, cellstyle, rows = 6:(nrow(facility_crosswalk) + 5), cols = 1:9, gridExpand = TRUE)
+  
+  for (j in 1:nrow(facility_crosswalk)) {
+    
+    writeFormula(
+      wb, 
+      sheet = 1, 
+      startRow = j + 5, 
+      x = 
+        makeHyperlinkString(
+          row = 1,
+          col = 1,
+          text = facility_crosswalk$facility[j],
+          sheet = facility_crosswalk$tab_name[j]
+        )
+    )
+    
+  }
+  
+  summary_limited <- facility_summary %>%
+    select(-Facility_Name) %>%
+    mutate(recent_alert = recent_alert_flag) %>%
+    select(-recent_alert_flag) %>%
+    rename(
+      `Hospital Region` = HospitalRegion,
+      `N Alerts` = n_alerts,
+      `Date of Last Alert` = date_last_alert, 
+      `N Visits` = n_visits, 
+      `Recent Alert` = recent_alert,
+      `Sequences of Consecutive Alerts` = n_seq_alerts,
+      `Longest Sequence` = longest_seq,
+      `Most Recent Sequence` = most_recent_seq
+    )
+  
+  writeData(wb, sheet = 1, "Facility", startRow = 5, startCol = 1)
+  writeData(wb, sheet = 1, summary_limited, startRow = 5, startCol = 2)
+  
+  conditionalFormatting(
+    wb,
+    sheet = 1,
+    cols = 6, 
+    rows = 6:(nrow(facility_crosswalk) + 5),
+    rule = "Alert",
+    style = createStyle(bgFill = "#A50026", fontColour = "white", textDecoration = "bold"),
+    type = "contains"
+  )
+  
+  conditionalFormatting(
+    wb,
+    sheet = 1,
+    cols = 6,
+    rows = 6:(nrow(facility_crosswalk) + 5),
+    rule = "Warning", 
+    style = createStyle(bgFill = "#FDD081", fontColour = "black", textDecoration = "bold"),
+    type = "contains"
+  )
+  
+  showGridLines(wb, sheet = 1, showGridLines = FALSE)
+  freezePane(wb, sheet = 1, firstActiveRow = 2)
+  
+  facilities_with_alerts <- sort(unique(workbook_data$Facility_Name))
+  
+  for (i in 1:length(all_facilities)) {
+    
+    
+    if (!all_facilities[i] %in% facilities_with_alerts) {
+      
+      sheet_name <- gsub("'", "", substr(str_squish(gsub("Hospital|Medical|Center|MN-|", "", all_facilities[i])), 1, 31))
+      
+      addWorksheet(wb, sheet_name, tabColour = "#203764", zoom = 85)
+      
+      sheet_data <- workbook_data %>%
+        filter(Facility_Name == all_facilities[i]) %>%
+        select(-HospitalRegion) %>%
+        mutate(color = ifelse(color == "yellow", "Warning", "Alert")) %>%
+        rename(
+          `Facility Name` = Facility_Name, 
+          `Facility ID` = facility_id, 
+          `Count` = count, 
+          `Alert` = alert, 
+          `Alert Type` = color, 
+          `Alert ID` = alert_id, 
+          `Patient City` = Patient_City,
+          `Patient ZIP` = Patient_Zip,
+          `Drug Type` = Drug_Type, 
+          `CCDD Category Flat` = CCDDCategory_flat,
+          `Death Date Time` = DeathDateTime,
+          `Death Indicator` = DeathIndicator
+        )
+      
+      addStyle(wb, sheet = i + 1, columnstyle, rows = 1, cols = 1:18)
+      addStyle(wb, sheet = i + 1, cellstyle, row = 2, cols = 1:18, gridExpand = TRUE)
+      freezePane(wb, sheet = i + 1, firstActiveRow = 2)
+      showGridLines(wb, sheet = i + 1, showGridLines = FALSE)
+      setColWidths(wb, sheet = i + 1, cols = c(1, 14), widths = 40)
+      setColWidths(wb, sheet = i + 1, cols = c(3, 5, 6, 8, 10, 11), widths = 7)
+      setColWidths(wb, sheet = i + 1, cols = 6, widths = 12)
+      setColWidths(wb, sheet = i + 1, cols = c(15, 16), widths = 25)
+      
+      writeData(wb, sheet = i + 1, sheet_data, startRow = 1)
+      
+      writeFormula(
+        wb, 
+        sheet = i + 1, 
+        startRow = 4, 
+        x = 
+          makeHyperlinkString(
+            row = 1,
+            col = 1,
+            text = "Back to Home Tab", 
+            sheet = "Introduction"
+          )
+      )
+      
+      
+    } else {
+      
+      sheet_name <- gsub("'", "", substr(str_squish(gsub("Hospital|Medical|Center|MN-|", "", all_facilities[i])), 1, 31))
+      
+      addWorksheet(wb, sheet_name, tabColour = "#203764", zoom = 85)
+      
+      sheet_data <- workbook_data %>%
+        filter(Facility_Name == all_facilities[i]) %>%
+        select(-HospitalRegion) %>%
+        mutate(color = ifelse(color == "yellow", "Warning", "Alert")) %>%
+        rename(
+          `Facility Name` = Facility_Name, 
+          `Facility ID` = facility_id, 
+          `Count` = count, 
+          `Alert` = alert, 
+          `Alert Type` = color, 
+          `Alert ID` = alert_id, 
+          `Patient City` = Patient_City,
+          `Patient ZIP` = Patient_Zip,
+          `Drug Type` = Drug_Type, 
+          `CCDD Category Flat` = CCDDCategory_flat,
+          `Death Date Time` = DeathDateTime,
+          `Death Indicator` = DeathIndicator
+        )
+      
+      addStyle(wb, sheet = i + 1, columnstyle, rows = 1, cols = 1:18)
+      addStyle(wb, sheet = i + 1, cellstyle, row = 2:(nrow(sheet_data) + 1), cols = 1:18, gridExpand = TRUE)
+      freezePane(wb, sheet = i + 1, firstActiveRow = 2)
+      showGridLines(wb, sheet = i + 1, showGridLines = FALSE)
+      setColWidths(wb, sheet = i + 1, cols = c(1, 14), widths = 40)
+      setColWidths(wb, sheet = i + 1, cols = c(3, 5, 6, 8, 10, 11), widths = 7)
+      setColWidths(wb, sheet = i + 1, cols = 6, widths = 12)
+      setColWidths(wb, sheet = i + 1, cols = c(15, 16), widths = 25)
+      
+      writeData(wb, sheet = i + 1, sheet_data, startRow = 1)
+      
+      conditionalFormatting(
+        wb,
+        sheet = i + 1,
+        cols = 6,
+        rows = 2:(nrow(sheet_data) + 1),
+        rule = "Alert", 
+        style = createStyle(bgFill = "#A50026", fontColour = "white", textDecoration = "bold"),
+        type = "contains"
+      )
+      
+      conditionalFormatting(
+        wb,
+        sheet = i + 1,
+        cols = 6,
+        rows = 2:(nrow(sheet_data) + 1),
+        rule = "Warning", 
+        style = createStyle(bgFill = "#FDD081", fontColour = "black", textDecoration = "bold"),
+        type = "contains"
+      )
+      
+      writeFormula(
+        wb, 
+        sheet = i + 1, 
+        startRow = nrow(sheet_data) + 3, 
+        x = 
+          makeHyperlinkString(
+            row = 1,
+            col = 1,
+            text = "Back to Home Tab", 
+            sheet = "Introduction"
+          )
+      )
+      
+      
+    }
+    
+  }
+  
+  saveWorkbook(wb, "MN_All_Drug_Alerting_Report.xlsx", overwrite = TRUE)
+  
+} 
