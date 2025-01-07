@@ -1,0 +1,5104 @@
+---
+title: "Minnesota Respiratory Syndromes Report"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: scroll
+    theme: cosmo
+    logo: mdoh_logo_scaled.png
+    favicon: mdoh_logo_scaled.png
+---
+
+<style>                     
+.navbar {
+  background-color:#003D79;
+  border-color:white;
+}
+.navbar-brand {
+color:white!important;
+}
+
+.leaflet-container {
+background: white;
+outline: 0;
+}
+</style>   
+
+<style type="text/css">
+
+.chart-title {  /* chart_title  */
+   font-size: 15px
+
+</style>
+
+```{r setup, include=FALSE}
+
+# Basic
+library(Rnssp)
+library(tidyverse)
+library(lubridate)
+library(MMWRweek)
+library(janitor) 
+
+# Dashboard
+library(flexdashboard)
+library(leaflet)
+library(leaflet.extras)
+library(leaflet.minicharts)
+library(rgdal)
+library(manipulateWidget)
+library(htmlwidgets)
+library(htmltools)
+library(plotly)
+library(shiny)
+library(shinydashboard)
+
+# Quantitative analysis
+library(gratia)
+
+# Data visualization
+library(sparkline)
+library(patchwork)
+library(DT)
+library(ggsci) 
+library(ggthemes)
+
+```
+
+```{r load data and utilities, echo = FALSE, warning = FALSE, message = FALSE}
+
+# Analyzed data---------------------------------------------------------------------------------------------------------
+load("MN_report_data.RData")
+
+state_age_weekly_combined <- bind_rows(
+  state_age_weekly %>%
+    mutate(region = "State"), 
+  region_age_weekly
+) 
+
+state_combined_age <- bind_rows(
+    state_age_daily_analyzed %>%
+      mutate(region = "State"), 
+    region_age_daily_analyzed 
+  ) %>%
+  filter(age_group != "Unknown")
+
+state_combined_age_weekly <- bind_rows(
+    state_age_weekly %>%
+      mutate(region = "State"), 
+    region_age_weekly 
+  ) %>%
+  filter(age_group != "Unknown")
+
+# Color palettes--------------------------------------------------------------------------------------------------------
+# > For trend classification heat maps and anomaly overlays
+pal <- c("#A50026", "#FDD081", "#364B9A", "#B3B3B3", "#FFFFFF")
+
+# > Base palette for individual time series
+linepal1 <- c("#00678A", "#254B73", "#4B384F", "#7197BF", "#012142")
+
+# > For age-stratified time series
+linepal2 <- gsub("FF$", "", pal_jama()(6))
+
+# > For Region-stratified time series
+large_pal <- stata_pal("s2color")(11)
+
+# Utility functions-----------------------------------------------------------------------------------------------------
+source("utility_functions_v2.R")
+
+# Shapefiles------------------------------------------------------------------------------------------------------------
+mn_regions <- read_csv("mn_regions.csv") %>%
+  mutate(fips = as.character(fips))
+
+mn_regions_sf <- readRDS("mn_regions_sf.rds") %>%
+  mutate(
+    CENTROID = map(geometry, st_centroid),
+    COORDS = map(CENTROID, st_coordinates),
+    COORDS_X = map_dbl(COORDS, 1), 
+    COORDS_Y = map_dbl(COORDS, 2)
+  ) %>%
+  select(
+    region, 
+    CENTROID,
+    COORDS,
+    COORDS_X,
+    COORDS_Y, 
+    geometry
+  ) %>%
+  st_transform(crs = '+proj=longlat +datum=WGS84') 
+
+mn_counties <- county_sf %>%
+  st_transform(crs = '+proj=longlat +datum=WGS84') %>%
+  filter(STATEFP == "27") %>%
+  st_as_sf() %>%
+  mutate(
+    CENTROID = map(geometry, st_centroid),
+    COORDS = map(CENTROID, st_coordinates), 
+    COORDS_X = map_dbl(COORDS, 1), 
+    COORDS_Y = map_dbl(COORDS, 2),
+    GEOID = as.character(GEOID)
+  ) %>%
+  left_join(mn_regions, by = c("GEOID" = "fips")) %>%
+  mutate(
+    region = factor(region, levels = paste(c("Northwest", "Northeast", "West Central", "Central", "Metro", "Southwest", "South Central", "Southeast"), "Region"))
+  ) 
+
+```
+
+State and MN Regional Summary
+==========================================================================
+
+#### MN Region Maps
+
+```{r map data, echo = FALSE, warning = FALSE, message = FALSE}
+
+region_trends_recent <- region_daily_analyzed %>%
+  filter(date == max(date)) %>%
+  left_join(mn_regions_sf, by = "region")
+
+date_label <- format(max(region_daily_analyzed$date), "%B %d, %Y")
+
+```
+
+Row {data-height=700 .tabset}
+-----------------------------------------------------------------------
+
+### Broad Acute Respiratory Diagnoses
+
+```{r}
+
+hhs_region_map(df = region_trends_recent, category = "CDC Broad Acute Respiratory DD v1")
+
+```
+
+### COVID-19 Diagnoses
+
+```{r}
+
+hhs_region_map(df = region_trends_recent, category = "CDC COVID-Specific DD v1")
+
+```
+
+### Influenza Diagnoses
+
+```{r}
+
+hhs_region_map(df = region_trends_recent, category = "CDC Influenza DD v1")
+
+```
+
+### Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+hhs_region_map(df = region_trends_recent, category = "CDC Respiratory Syncytial Virus DD v1")
+
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### Regional Trends (Stratified)
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+### Broad Acute Respiratory Diagnoses
+
+```{r}
+
+state_combined <- region_daily_analyzed 
+
+trl <- strat_trend_plot(category = "CDC Broad Acute Respiratory DD v1")
+
+tabBox(
+  width = 15, 
+  tabPanel("Percentages (Raw)", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts (Raw)", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### COVID-19 Diagnoses
+
+```{r}
+
+trl <- strat_trend_plot(category = "CDC COVID-Specific DD v1")
+
+tabBox(
+  width = 15, 
+  tabPanel("Percentages (Raw)", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts (Raw)", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### Influenza Diagnoses
+
+```{r}
+
+trl <- strat_trend_plot(category = "CDC Influenza DD v1")
+
+tabBox(
+  width = 15, 
+  tabPanel("Percentages (Raw)", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts (Raw)", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- strat_trend_plot(category = "CDC Respiratory Syncytial Virus DD v1")
+
+tabBox(
+  width = 15, 
+  tabPanel("Percentages (Raw)", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts (Raw)", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### State Trends with Analytics
+
+Row {data-height=400}
+-----------------------------------------------------------------------
+
+### Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Broad Acute Respiratory DD v1", geography = "state")
+
+tabBox(
+  width = 14, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC COVID-Specific DD v1", geography = "state")
+
+tabBox(
+  width = 14, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Influenza Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Influenza DD v1", geography = "state")
+
+tabBox(
+  width = 14, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_plot(category = "CDC Respiratory Syncytial Virus DD v1", geography = "state")
+
+tabBox(
+  width = 14, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Regional Trends with Analytics
+
+Row {data-height=400}
+-----------------------------------------------------------------------
+
+### Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Broad Acute Respiratory DD v1", geography = "regional", hhs_region = "Northwest Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Northwest Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC COVID-Specific DD v1", geography = "regional", hhs_region = "Northwest Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Northwest Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Influenza Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Influenza DD v1", geography = "regional", hhs_region = "Northwest Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Northwest Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_plot(category = "CDC Respiratory Syncytial Virus DD v1", geography = "regional", hhs_region = "Northwest Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Northwest Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=400}
+-----------------------------------------------------------------------
+
+### Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Broad Acute Respiratory DD v1", geography = "regional", hhs_region = "Northeast Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Northeast Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC COVID-Specific DD v1", geography = "regional", hhs_region = "Northeast Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Northeast Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Influenza Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Influenza DD v1", geography = "regional", hhs_region = "Northeast Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Northeast Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_plot(category = "CDC Respiratory Syncytial Virus DD v1", geography = "regional", hhs_region = "Northeast Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Region2", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=400}
+-----------------------------------------------------------------------
+
+### Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Broad Acute Respiratory DD v1", geography = "regional", hhs_region = "West Central Region")
+
+tabBox(
+  width = 14, 
+  title = "MN West Central Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC COVID-Specific DD v1", geography = "regional", hhs_region = "West Central Region")
+
+tabBox(
+  width = 14, 
+  title = "MN West Central Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Influenza Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Influenza DD v1", geography = "regional", hhs_region = "West Central Region")
+
+tabBox(
+  width = 14, 
+  title = "MN  West Central Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_plot(category = "CDC Respiratory Syncytial Virus DD v1", geography = "regional", hhs_region = "West Central Region")
+
+tabBox(
+  width = 14, 
+  title = "MN West Central Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=400}
+-----------------------------------------------------------------------
+
+### Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Broad Acute Respiratory DD v1", geography = "regional", hhs_region = "Central Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Central Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC COVID-Specific DD v1", geography = "regional", hhs_region = "Central Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Central Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Influenza Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Influenza DD v1", geography = "regional", hhs_region = "Central Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Central Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_plot(category = "CDC Respiratory Syncytial Virus DD v1", geography = "regional", hhs_region = "Central Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Central Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=400}
+-----------------------------------------------------------------------
+
+### Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Broad Acute Respiratory DD v1", geography = "regional", hhs_region = "Metro Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Metro Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC COVID-Specific DD v1", geography = "regional", hhs_region = "Metro Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Metro Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Influenza Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Influenza DD v1", geography = "regional", hhs_region = "Metro Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Metro Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_plot(category = "CDC Respiratory Syncytial Virus DD v1", geography = "regional", hhs_region = "Metro Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Metro Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=400}
+-----------------------------------------------------------------------
+
+### Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Broad Acute Respiratory DD v1", geography = "regional", hhs_region = "Southwest Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Southwest Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC COVID-Specific DD v1", geography = "regional", hhs_region = "Southwest Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Southwest Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Influenza Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Influenza DD v1", geography = "regional", hhs_region = "Southwest Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Southwest Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_plot(category = "CDC Respiratory Syncytial Virus DD v1", geography = "regional", hhs_region = "Southwest Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Southwest Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=400}
+-----------------------------------------------------------------------
+
+### Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Broad Acute Respiratory DD v1", geography = "regional", hhs_region = "South Central Region")
+
+tabBox(
+  width = 14, 
+  title = "MN South Central Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC COVID-Specific DD v1", geography = "regional", hhs_region = "South Central Region")
+
+tabBox(
+  width = 14, 
+  title = "MN South Central Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Influenza Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Influenza DD v1", geography = "regional", hhs_region = "South Central Region")
+
+tabBox(
+  width = 14, 
+  title = "MN South Central Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_plot(category = "CDC Respiratory Syncytial Virus DD v1", geography = "regional", hhs_region = "South Central Region")
+
+tabBox(
+  width = 14, 
+  title = "MN South Central Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=400}
+-----------------------------------------------------------------------
+
+### Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Broad Acute Respiratory DD v1", geography = "regional", hhs_region = "Southeast Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Southeast Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC COVID-Specific DD v1", geography = "regional", hhs_region = "Southeast Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Southeast Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Influenza Diagnoses
+
+```{r}
+
+trl <- trend_plot(category = "CDC Influenza DD v1", geography = "regional", hhs_region = "Southeast Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Southeast Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+### Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_plot(category = "CDC Respiratory Syncytial Virus DD v1", geography = "regional", hhs_region = "Southeast Region")
+
+tabBox(
+  width = 14, 
+  title = "MN Southeast Region", 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Broad Acute Respiratory Diagnoses {data-navmenu="Syndrome-specific Summaries"}
+==========================================================================
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+### Daily State Age-stratified Trends (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "State", period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### Weekly State Age-stratified Trends (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "State", period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### Daily State Percentages with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "State")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### Weekly State Percentages with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "State")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### Daily State Counts with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]), 
+  tabPanel("45-64", trl$count[[5]]), 
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### Weekly State Counts with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "State")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Northwest Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Northwest Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Northwest Region - Daily Age-stratified Trends (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Northwest Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northwest Region - Daily Percentages with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Northwest Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "Northwest Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northwest Region - Daily Counts with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Northwest Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "Northwest Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Northeast Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Northeast Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Northeast Region - Daily Age-stratified Trends (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Northeast Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northeast Region - Daily Percentages with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Northeast Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "Northeast Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northeast Region - Daily Counts with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Northeast Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "Northeast Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN West Central Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "West Central Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN West Central Region - Daily Age-stratified Trends (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN West Central Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN West Central Region - Daily Percentages with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN West Central Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "West Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN West Central Region - Daily Counts with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN West Central Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "West Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Central Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Central Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Central Region - Daily Age-stratified Trends (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Central Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Central Region - Daily Percentages with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Central Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Central Region - Daily Counts with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Central Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Metro Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Metro Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Metro Region - Daily Age-stratified Trends (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Metro Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Metro Region - Daily Percentages with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Metro Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "Metro Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Metro Region - Daily Counts with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Metro Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "Metro Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Southwest Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Southwest Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Southwest Region - Daily Age-stratified Trends (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Southwest Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southwest Region - Daily Percentages with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Southwest Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "Southwest Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southwest Region - Daily Counts with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Southwest Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "Southwest Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN South Central Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "South Central Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN South Central Region - Daily Age-stratified Trends (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN South Central Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN South Central Region - Daily Percentages with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN South Central Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "South Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN South Central Region - Daily Counts with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN South Central Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "South Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Southeast Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Southeast Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Southeast Region - Daily Age-stratified Trends (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Southeast Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southeast Region - Daily Percentages with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Broad Acute Respiratory DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Southeast Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "Southeast Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southeast Region - Daily Counts with Analytics (Current Year): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Southeast Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Broad Acute Respiratory Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Broad Acute Respiratory DD v1", hhs_region = "Southeast Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+COVID-19 Diagnoses {data-navmenu="Syndrome-specific Summaries"}
+==========================================================================
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+### Daily State Age-stratified Trends (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = "State", period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### Weekly State Age-stratified Trends (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = "State", period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### Daily State Percentages with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC COVID-Specific DD v1", hhs_region = "State")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### Weekly State Percentages with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### Daily State Counts with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]), 
+  tabPanel("45-64", trl$count[[5]]), 
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### Weekly State Counts with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Northwest Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Northwest Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Northwest Region - Daily Age-stratified Trends (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Northwest Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northwest Region - Daily Percentages with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Northwest Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northwest Region - Daily Counts with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Northwest Region - Weekly Counts with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Northeast Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Northeast Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Northeast Region - Daily Age-stratified Trends (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Northeast Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northeast Region - Daily Percentages with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Northeast Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northeast Region - Daily Counts with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Northeast Region - Weekly Counts with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN West Central Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "West Central Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN West Central Region - Daily Age-stratified Trends (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN West Central Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN West Central Region - Daily Percentages with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN West Central Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN West Central Region - Daily Counts with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN West Central Region - Weekly Counts with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Central Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Central Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Central Region - Daily Age-stratified Trends (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Central Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Central Region - Daily Percentages with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Central Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Central Region - Daily Counts with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Central Region - Weekly Counts with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Metro Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Metro Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Metro Region - Daily Age-stratified Trends (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Metro Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Metro Region - Daily Percentages with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Metro Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Metro Region - Daily Counts with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Metro Region - Weekly Counts with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Southwest Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Southwest Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Southwest Region - Daily Age-stratified Trends (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Southwest Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southwest Region - Daily Percentages with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Southwest Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southwest Region - Daily Counts with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Southwest Region - Weekly Counts with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN South Central Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "South Central Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN South Central Region - Daily Age-stratified Trends (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN South Central Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN South Central Region - Daily Percentages with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN South Central Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN South Central Region - Daily Counts with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN South Central Region - Weekly Counts with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Southeast Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Southeast Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Southeast Region - Daily Age-stratified Trends (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Southeast Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southeast Region - Daily Percentages with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC COVID-Specific DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Southeast Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southeast Region - Daily Counts with Analytics (Current Year): COVID-19 Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Southeast Region - Weekly Counts with Analytics (2018-Current with DQ Filters): COVID-19 Diagnoses
+
+Does not apply due to lack of historical baseline data.
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+Influenza Diagnoses {data-navmenu="Syndrome-specific Summaries"}
+==========================================================================
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+### Daily State Age-stratified Trends (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = "State", period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### Weekly State Age-stratified Trends (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = "State", period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### Daily State Percentages with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Influenza DD v1", hhs_region = "State")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### Weekly State Percentages with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Influenza DD v1", hhs_region = "State")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### Daily State Counts with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]), 
+  tabPanel("45-64", trl$count[[5]]), 
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### Weekly State Counts with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Influenza DD v1", hhs_region = "State")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Northwest Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Northwest Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Northwest Region - Daily Age-stratified Trends (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Northwest Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northwest Region - Daily Percentages with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Influenza DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Northwest Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Influenza DD v1", hhs_region = "Northwest Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northwest Region - Daily Counts with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Northwest Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Influenza DD v1", hhs_region = "Northwest Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Northeast Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Northeast Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Northeast Region - Daily Age-stratified Trends (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Northeast Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northeast Region - Daily Percentages with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Influenza DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Northeast Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Influenza DD v1", hhs_region = "Northeast Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northeast Region - Daily Counts with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Northeast Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Influenza DD v1", hhs_region = "Northeast Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN West Central Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "West Central Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN West Central Region - Daily Age-stratified Trends (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN West Central Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN West Central Region - Daily Percentages with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Influenza DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN West Central Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Influenza DD v1", hhs_region = "West Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN West Central Region - Daily Counts with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN West Central Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Influenza DD v1", hhs_region = "West Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Central Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Central Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Central Region - Daily Age-stratified Trends (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Central Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Central Region - Daily Percentages with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Influenza DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Central Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Influenza DD v1", hhs_region = "Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Central Region - Daily Counts with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Central Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Influenza DD v1", hhs_region = "Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Metro Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Metro Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Metro Region - Daily Age-stratified Trends (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Metro Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Metro Region - Daily Percentages with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Influenza DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Metro Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Influenza DD v1", hhs_region = "Metro Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Metro Region - Daily Counts with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Metro Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Influenza DD v1", hhs_region = "Metro Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Southwest Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Southwest Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Southwest Region - Daily Age-stratified Trends (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Southwest Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southwest Region - Daily Percentages with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Influenza DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Southwest Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Influenza DD v1", hhs_region = "Southwest Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southwest Region - Daily Counts with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Southwest Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Influenza DD v1", hhs_region = "Southwest Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN South Central Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "South Central Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN South Central Region - Daily Age-stratified Trends (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN South Central Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN South Central Region - Daily Percentages with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Influenza DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN South Central Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Influenza DD v1", hhs_region = "South Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN South Central Region - Daily Counts with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN South Central Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Influenza DD v1", hhs_region = "South Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Southeast Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Southeast Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Southeast Region - Daily Age-stratified Trends (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Southeast Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Influenza DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southeast Region - Daily Percentages with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Influenza DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]]),
+  tabPanel("12-17", trl$prop[[3]]),
+  tabPanel("18-44", trl$prop[[4]]), 
+  tabPanel("45-64", trl$prop[[5]]), 
+  tabPanel("65+", trl$prop[[6]])
+)
+
+```
+
+### MN Southeast Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Influenza DD v1", hhs_region = "Southeast Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]), 
+  tabPanel("45-64", nbl[[5]]), 
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southeast Region - Daily Counts with Analytics (Current Year): Influenza Diagnoses
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]]),
+  tabPanel("12-17", trl$count[[3]]),
+  tabPanel("18-44", trl$count[[4]]),
+  tabPanel("45-64", trl$count[[5]]),
+  tabPanel("65+", trl$count[[6]])
+)
+
+```
+
+### MN Southeast Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Influenza Diagnoses
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Influenza DD v1", hhs_region = "Southeast Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]]),
+  tabPanel("12-17", nbl[[3]]),
+  tabPanel("18-44", nbl[[4]]),
+  tabPanel("45-64", nbl[[5]]),
+  tabPanel("65+", nbl[[6]])
+)
+
+```
+
+Respiratory Syncytial Virus (RSV) {data-navmenu="Syndrome-specific Summaries"}
+==========================================================================
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+### Daily State Age-stratified Trends (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "State", period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### Weekly State Age-stratified Trends (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "State", period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### Daily State Percentages with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "State")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]])
+)
+
+```
+
+### Weekly State Percentages with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "State")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+  
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### Daily State Counts with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]])
+)
+
+```
+
+### Weekly State Counts with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "State")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Northwest Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Northwest Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Northwest Region - Daily Age-stratified Trends (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Northwest Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northwest Region - Daily Percentages with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]])
+)
+
+```
+
+### MN Northwest Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "Northwest Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northwest Region - Daily Counts with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]])
+)
+
+```
+
+### MN Northwest Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "Northwest Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Northeast Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Northeast Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Northeast Region - Daily Age-stratified Trends (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Northeast Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northeast Region - Daily Percentages with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]])
+)
+
+```
+
+### MN Northeast Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "Northeast Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Northeast Region - Daily Counts with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]])
+)
+
+```
+
+### MN Northeast Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "Northeast Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN West Central Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "West Central Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN West Central Region - Daily Age-stratified Trends (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN West Central Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN West Central Region - Daily Percentages with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]])
+)
+
+```
+
+### MN West Central Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "West Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN West Central Region - Daily Counts with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]])
+)
+
+```
+
+### MN West Central Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "West Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Central Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Central Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Central Region - Daily Age-stratified Trends (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Central Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Central Region - Daily Percentages with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]])
+)
+
+```
+
+### MN Central Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Central Region - Daily Counts with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]])
+)
+
+```
+
+### MN Central Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Metro Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Metro Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Metro Region - Daily Age-stratified Trends (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Metro Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Metro Region - Daily Percentages with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]])
+)
+
+```
+
+### MN Metro Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "Metro Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Metro Region - Daily Counts with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]])
+)
+
+```
+
+### MN Metro Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "Metro Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Southwest Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Southwest Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Southwest Region - Daily Age-stratified Trends (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Southwest Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southwest Region - Daily Percentages with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]])
+)
+
+```
+
+### MN Southwest Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "Southwest Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southwest Region - Daily Counts with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]])
+)
+
+```
+
+### MN Southwest Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "Southwest Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN South Central Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "South Central Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN South Central Region - Daily Age-stratified Trends (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN South Central Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN South Central Region - Daily Percentages with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]])
+)
+
+```
+
+### MN South Central Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "South Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN South Central Region - Daily Counts with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]])
+)
+
+```
+
+### MN South Central Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "South Central Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+  
+```
+
+Row {data-height=50}
+-----------------------------------------------------------------------
+
+#### MN Southeast Region
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+```{r, echo = FALSE}
+
+rni <- "Southeast Region"
+rn <- gsub("Region ", "", rni)
+
+```
+
+### MN Southeast Region - Daily Age-stratified Trends (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "current")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Percentages (Smoothed)", trl[[2]]), 
+  tabPanel("Counts", trl[[3]]),
+  tabPanel("Counts (Smoothed)", trl[[4]])
+)
+
+```
+
+### MN Southeast Region - Weekly Age-stratified Trends (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- age_strat_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn, period = "multi")
+
+tabBox(
+  width = 12, 
+  tabPanel("Percentages", trl[[1]]), 
+  tabPanel("Counts", trl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southeast Region - Daily Percentages with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+trl <- trend_age_plot(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = rn)
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$prop[[1]]), 
+  tabPanel("5-11", trl$prop[[2]])
+)
+
+```
+
+### MN Southeast Region - Weekly Percentages with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_prop(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "Southeast Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+
+```
+
+Row {data-height=425}
+-----------------------------------------------------------------------
+
+### MN Southeast Region - Daily Counts with Analytics (Current Year): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", trl$count[[1]]), 
+  tabPanel("5-11", trl$count[[2]])
+)
+
+```
+
+### MN Southeast Region - Weekly Counts with Analytics (2018-Current with DQ Filters): Respiratory Syncytial Virus (RSV)
+
+```{r}
+
+nbl <- wkly_ewma_count(category = "CDC Respiratory Syncytial Virus DD v1", hhs_region = "Southeast Region")
+
+tabBox(
+  width = 12, 
+  tabPanel("0-4", nbl[[1]]), 
+  tabPanel("5-11", nbl[[2]])
+)
+
+```
+
+Summary Analytics Table
+==========================================================================
+
+Row {data-height=1200}
+-----------------------------------------------------------------------
+
+### Daily (Current Year)
+
+```{r combine data, echo = FALSE, warning = FALSE, message = FALSE}
+
+region_recent <- region_daily_analyzed %>%
+  mutate(age_group = "All") %>%
+  select(
+    region, 
+    ccdd_category, 
+    age_group, 
+    date, 
+    fitted_prop,
+    fitted_counts, 
+    trend_prop, 
+    alert_prop,
+    p.value_prop, 
+    trend_counts,
+    alert_count,
+    p.value_count
+  )
+
+region_age_recent <- region_age_daily_analyzed %>%
+  filter(age_group != "Unknown") %>%
+  select(
+    region, 
+    ccdd_category, 
+    age_group, 
+    date, 
+    fitted_prop, 
+    fitted_counts, 
+    trend_prop, 
+    alert_prop,
+    p.value_prop, 
+    trend_counts,
+    alert_count,
+    p.value_count
+  )
+
+state_recent <- state_daily_analyzed %>%
+  mutate(
+    region = "State",
+    age_group = "All"
+  ) %>%
+  select(
+    region, 
+    ccdd_category, 
+    age_group, 
+    date, 
+    fitted_prop, 
+    fitted_counts, 
+    trend_prop, 
+    alert_prop,
+    p.value_prop, 
+    trend_counts,
+    alert_count,
+    p.value_count
+  )
+
+state_age_recent <- state_age_daily_analyzed %>%
+  mutate(region = "State") %>%
+  filter(age_group != "Unknown") %>%
+  select(
+    region, 
+    ccdd_category, 
+    age_group, 
+    date, 
+    fitted_prop, 
+    fitted_counts, 
+    trend_prop, 
+    alert_prop,
+    p.value_prop, 
+    trend_counts,
+    alert_count,
+    p.value_count
+  )
+
+daily_master_tab <- bind_rows(
+  region_recent, 
+  region_age_recent, 
+  state_recent, 
+  state_age_recent
+) %>%
+  mutate(
+    region = factor(region, levels = c("State", "Northwest Region", "Northeast Region", "West Central Region", "Central Region",       "Metro Region", "Southwest Region", "South Central Region", "Southeast Region")),  
+    age_group = factor(age_group, levels = c("All", "0-4", "5-11", "12-17", "18-44", "45-64", "65+")),
+    ccdd_category = factor(ccdd_category, levels = c("CDC Broad Acute Respiratory DD v1", "CDC COVID-Specific DD v1", "CDC Influenza DD v1", "CDC Respiratory Syncytial Virus DD v1"), labels = c("Broad Acute Respiratory Diagnoses", "COVID-19 Diagnoses", "Influenza Diagnoses", "Respiratory Syncytial Virus (RSV)"))
+  ) %>%
+  arrange(region, age_group, ccdd_category, date) %>%
+  group_by(region, age_group, ccdd_category) %>%
+  mutate(
+    date = last(date), 
+    trend_prop = last(trend_prop), 
+    p.value_prop = last(p.value_prop), 
+    alert_prop = last(alert_prop), 
+    trend_counts = last(trend_counts), 
+    p.value_count = last(p.value_count), 
+    alert_count = last(alert_count)
+  ) %>%
+  group_by(region, age_group, ccdd_category, date, trend_prop, p.value_prop, alert_prop, trend_counts, p.value_count, alert_count) %>%
+  summarise(
+    sparkline_prop = spk_chr(
+      fitted_prop, 
+      type = "line", 
+      width = 90, 
+      height = 30, 
+      chartRangeMin = 0, 
+      disableInteraction = TRUE, 
+      minSpotColor = FALSE, 
+      maxSpotColor = FALSE, 
+      spotColor = FALSE
+    ),
+    sparkline_count = spk_chr(
+      fitted_counts,
+      type = "line", 
+      width = 90, 
+      height = 30, 
+      chartRangeMin = 0, 
+      disableInteraction = TRUE, 
+      minSpotColor = FALSE, 
+      maxSpotColor = FALSE, 
+      spotColor = FALSE
+    )
+  ) %>%
+  ungroup() %>%
+  select(
+    region, 
+    age_group, 
+    ccdd_category, 
+    date,
+    trend_prop, 
+    alert_prop, 
+    p.value_prop, 
+    sparkline_prop, 
+    trend_counts,
+    alert_count,
+    p.value_count, 
+    sparkline_count
+  ) %>%
+  mutate(
+    alert_prop = case_when(
+      alert_prop == "blue" ~ "None", 
+      alert_prop == "yellow" ~ "Warning", 
+      alert_prop == "red" ~ "Alert"
+    ),
+    alert_count = case_when(
+      alert_count == "blue" ~ "None", 
+      alert_count == "yellow" ~ "Warning", 
+      alert_count == "red" ~ "Alert"
+    )
+  )
+
+daily_master_tab %>%
+  datatable(
+    class = "cell-border stripe",
+    style = "bootstrap",
+    rownames = FALSE,
+    filter = "top",
+    escape = FALSE,
+    extensions = "Buttons",
+    options = list(
+      autoWidth = TRUE,
+      dom = "Bfrtip",
+      buttons = c("csv", "excel", "pdf"),
+      scrollY = 700,
+      pageLength = nrow(daily_master_tab),
+      columnDefs = list(list(searchable = FALSE, targets = c(6, 7, 10, 11)
+      )), 
+      headerCallback = DT::JS(
+        "function(thead) {",
+        "  $(thead).css('font-size', '90%');",
+        "}"
+      )
+    ),
+    colnames = c(
+      "MN Region", 
+      "Age Group", 
+      "CCDD Category", 
+      "Date", 
+      "Trend Classification (Percentages)", 
+      "Temporal Alert (Percentages)", 
+      "Alert p-value (Percentages)", 
+      "Sparkline (Percentages)", 
+      "Trend Classification (Counts)", 
+      "Temporal Alert (Counts)", 
+      "Alert p-value (Counts)", 
+      "Sparkline (Counts)"
+    )
+  ) %>%
+  formatRound(c("p.value_prop", "p.value_count"), digits = 3) %>%
+  formatStyle(
+    c("trend_prop", "trend_counts"), 
+    target = "cell", 
+    color = styleEqual(c("Increasing", "Decreasing", "Sparse"), c("white", "white", "black")),
+    backgroundColor = styleEqual(c("Increasing", "Decreasing", "Sparse"), c(pal[1], pal[3], pal[4]))
+  ) %>%
+  formatStyle(
+    c("alert_prop", "alert_count"),
+    target = "cell",
+    color = styleEqual(c("Alert", "Warning"), c("white", "black")),
+    backgroundColor = styleEqual(c("Alert", "Warning"), c(pal[1], pal[2]))
+  ) %>%
+  formatStyle(
+    "p.value_prop", "alert_prop",
+    color = styleEqual(c("Alert", "Warning"), c("white", "black")),
+    backgroundColor = styleEqual(c("Alert", "Warning"), c(pal[1], pal[2]))
+  ) %>%
+  formatStyle(
+    "p.value_count", "alert_count",
+    color = styleEqual(c("Alert", "Warning"), c("white", "black")),
+    backgroundColor = styleEqual(c("Alert", "Warning"), c(pal[1], pal[2]))
+  ) %>%
+  spk_add_deps() %>%
+  formatStyle(columns = 1:12, fontSize = "90%")
+
+```
+
+Methods Section
+==========================================================================
+
+Row {data-height=800}
+-----------------------------------------------------------------------
+
+### Syndrome Definitions
+
+The ESSENCE system was used to develop keyword and diagnostic code based algorithms using Boolean criteria to search the chief complaint and discharge diagnosis fields for terms and diagnosis codes to identify encounters matching each syndrome. The definitions for the respiratory syndromes included in this report are either completely or heavily reliant on diagnostic codes. The following respiratory-related syndrome definitions were used to pull emergency department visit data from NSSP-ESSENCE:
+
+```{r}
+
+library(kableExtra)
+
+syndef <- read_csv("syndef_ccdd.csv") %>%
+  filter(syndrome %in% c("CDC Broad Acute Respiratory DD v1", "CDC COVID-Specific DD v1", "CDC Influenza DD v1", "CDC Respiratory Syncytial Virus DD v1")) %>%
+  mutate(
+    syndrome = factor(syndrome, levels = c("CDC Broad Acute Respiratory DD v1", "CDC COVID-Specific DD v1", "CDC Influenza DD v1", "CDC Respiratory Syncytial Virus DD v1"))
+  ) %>%
+  arrange(syndrome) %>%
+  mutate(
+    query_logic = gsub("\\^", "\\\\^", query_logic),
+    description = c(
+      "Query designed to identify visits with diagnostic codes associated with a broad range of acute respiratory illnesses. This includes codes associated with specific respiratory infections (e.g. influenza, RSV, or coronavirus), as well as codes associated with general respiratory illness such as cough or pneumonia.",
+      "Query designed to identify visits with diagnosis codes for COVID-19. This definition does **not** include diagnosis codes for non-SARS-CoV-2 coronavirus infections. Diagnoses include ICD-10 and SNOMED codes for COVID-19 and pneumonia due to COVID-19.",
+      "Diagnostic query with ICD-10 and ICD-9 discharge diagnosis codes for infection due to to identified zoonotic or pandemic influenza virus, seasonal influenza virus, or unidentified influenza virus. Search terms also include SNOMED diagnosis codes for influenza caused by Influenza A virus, Influenza A virus subtype H1N1, and pneumonia and influenza.",
+      "Chief complaint free text terms and discharge diagnosis codes to identify visits related to respiratory syncytial virus (RSV)."
+    )
+  ) 
+
+syndef %>%
+  select(
+    syndrome, 
+    description, 
+    query_logic
+  ) %>%
+  kable(
+    "html",
+    col.names = c("Syndrome Definition", "Description", "Query")
+    ) %>%
+  kable_styling(full_width = TRUE) %>%
+  scroll_box(height = "700px")
+
+```
+
+Row {data-height=800}
+-----------------------------------------------------------------------
+
+### Data Pulls and Considerations
+
+The data included in this report are pulled directly into the BioSense Platform instance of RStudio Workbench using the NSSP-ESSENCE table builder APIs. Two separate API pulls are used to pull 1) daily and 2) weekly visit counts and percentages stratified by Region and age group. Patient age groups included in this report are based on the ESSENCE school age grouping system:
+
+  - 0-4 Years
+  - 5-11 Years
+  - 18-25 Years
+  - 26-34 Years
+  - 35-44 Years
+  - 45-54 Years
+  - 55-64 Years
+  - 65+ Years
+  - Unknown
+  
+Visit counts for age groups 18-25, 26-34, 35-44 and 45-54, 55-64 are aggregated into 18-44 and 45-64 year age groups respectively. Both data pulls limit to emergency department visits by using Has been Emergency = Yes. Daily data are pulled from January 2, 2022 through the end of the most recent, complete MMWR week. Weekly data are pulled from MMWR week 1 of 2018 (week starting on December 31, 2017) through the end of the most recent, complete MMWR week and are restricted to visits from facilities with consistent reporting (total ED volume) and high completeness for discharge diagnoses over the last 4 years to date. The following ESSENCE data quality filters are used to pull weekly visit counts and percentages:
+
+  1. Coefficient of Variation (CoV) $\leq$ 35%
+  2. Average weekly discharge diagnosis informative (DDI): $\geq$ 75%
+
+Integration of these data quality filters are important in syndromic surveillance as the dynamic nature of these very high volume and timely data can cause fluctuations in data quality metrics that may influence interpretation of the syndromic trend or results of temporal algorithms (i.e., anomaly detection and trend classification) applied to multi-year time series. Below are several important caveats to consider when interpreting the data and results presented in this report:
+
+  1. It is important to understand that on any given day there may be data drop-outs from reporting facilities that typically fill-in once data transmission errors are resolved over time, and that historical data are not necessarily provided back to the same starting date by all reporting sites and facilities. 
+  2. In general, information from 70% of visits arrive within 48 hours - and most often this includes the chief complaint of the visit. However, the trade-off for timely data are data with imperfections and ..variable level incompleteness. Over time, facilities send updated information about visits that are merged with previous information on a visit using a unique identifier. 
+  3. One of the objectives of syndromic surveillance is to provide a sense of trends and not overall burden. Due to the fact that these data are sent in near real-time and are not finalized data sets we cannot assume these are confirmed cases. Instead, we describe these emergency department visits as "suspected" and not "cases". **Data collected from syndromic surveillance should not be interpreted or represented as exact counts for any health condition.** 
+  
+Lastly, the percentages reported in each time series should be interpreted as stratification-specific percentages. As an example, weekly national percentages for RSV associated emergency department visits in patients aged 0-4 years are calculated using the following inclusion criteria for the numerator and denominator:
+
+$$\frac{(\text{Has Been Emergency = Yes}) \quad \text{AND} \quad (\text{RSV Syndrome Match = Yes}) \quad \text{AND} \quad (\text{Age Group = 0-4 })}{(\text{Has Been Emergency = Yes}) \quad \text{AND} \quad (\text{Age Group = 0-4})}$$
+
+Percentages across stratifications (i.e., age groups) will therefore not add up to 100%. 
+
+Row {data-height=600}
+-----------------------------------------------------------------------
+
+### Anomaly Detection Algorithms
+
+#### Daily Time Series 
+
+The purpose of the NSSP-ESSENCE temporal anomaly detection algorithms is to highlight features in complex data streams of current concern and direct the attention of federal, state, and local-level users to anomalous increases in time series that may merit further investigation. These algorithms are intended to be leading edge detectors to signal early warning signs of potential disease outbreaks and events of public health concern. The ESSENCE detector algorithms are based on one-sided statistical tests that monitor for unusually high time series observations and not low. For daily time series, the ESSENCE temporal anomaly detection algorithms all share a common implementation with 28-day adaptive baselines that are used to compute expected observations (i.e., counts or percentages) for each test date. The observation for a given test date is compared to the expected value to measure deviance from the baseline (test statistic). The statistical test is a one-sided Student's t-distribution that signals warnings at the 5% significance level and alerts at the 1% significance level. 
+
+The ESSENCE temporal anomaly detection algorithms are implemented into the `Rnssp` [R package](https://github.com/CDCgov/Rnssp), which provides a suite of tools, functions, and additional time series algorithms to support the NSSP Community of Practice. The `Rnssp` anomaly detection functions allow users to specify custom algorithm parameters that are otherwise fixed in NSSP-ESSENCE. The anomaly detection results for all daily time series included in this report are based on the exponentially weighted moving average (EWMA) control chart detector. The EWMA detector applies 2 separate .smoothing coefficients of $\omega = 0.4$ and $\omega = 0.9$ to account for both gradual and sudden events. EWMA values are computed using the following recursive formula
+
+$$
+z_t = \omega y_t + (1 - \omega) z_{t-1}
+$$
+where $z_1$ is set to the first time series observation, $y_1$. Test statistics are computed by subtracting the 28-day baseline mean from the current EWMA value and dividing by the standard deviation of the adaptive baseline. A 2-day guardband (buffer-period) is used to separate the test date from the end of the baseline to prevent early outbreak effects from contaminating the baseline and reducing alerting sensitivity. The current ESSENCE and `Rnssp` implementation of the EWMA detector includes multiple safeguards to improve algorithm performance. These safeguards include 1) bounding of the baseline .variance to avoid instability and unwanted alerts caused by sparse baselines with baseline averages close to 0; and 2) reducing extreme outliers in the baseline to threshold values. 
+
+#### Weekly Time Series 
+
+Due to sparsity and smaller visit counts at the county and region level, the EWMA algorithm described above is applied to weekly time series from January 2018 to present date. A baseline length of 28 weeks is used with a 1 week guardband. An alternative anomaly detection for weekly time series is to fit a regression model with cyclic terms to a multi-year baseline and make out-of-sample forecasts for the post-baseline prediction period. An alarm would be signaled for any week during which the observed value exceeds the .upper_ci bounds of 95% prediction intervals. This method can be useful for detecting out-of-season behavior during the evaluation period, however performs poorly on time series with smaller visit counts and is therefore not applied in this version of the dashboard.
+
+Row {data-height=300}
+-----------------------------------------------------------------------
+
+### Trend Classification Algorithm
+
+A related interest in routine surveillance is automated identification and monitoring of time series with increases or decreases in trend. Due to dependency on 28-day baselines, the ESSENCE temporal anomaly detection algorithms have a tendency to stop signaling alerts once the baseline is sufficiently elevated during periods of sustained increases in trend. As noted previously, these algorithms are designed to be leading edge detectors and are intended to provide early signals of emerging outbreaks or events of concern. Traditional methods for classifying time series trajectory over each observed time unit typically fit regression models to $n$-day adaptive time windows where the sign and significance of the linear time term can be used to bin into trajectory categories of significant increase, significant decrease, or no significant change. These methods typically perform well at higher level geography units (i.e., national or state-level), but have a tendency to produce less reliable results at finer geography levels. Alternatively, generalized additive models (GAMs) can provide a more robust basis for assessing trend. GAMs are a relaxation of generalized linear models in which a link function, $g$, relates the response .variable to a linear combination of unknown .smooth functions of the predictor .variables that allow for complex, non-linear relationships. The .smooth terms are often represented by penalized regression splines. The family of the GAM can be adjusted to accommodate .various data sources and time series metrics. The negative binomial family is used for time series of counts, while the binomial family is used for time series of proportions. 
+
+Approximations of the first .derivative (slope) of the GAM can then be used to assess the daily trajectory of a time series. To determine time intervals in which the GAM has a rate of change distinguishable from 0, the .variance-co.variance matrix of the GAM coefficients can be used to derive 95% confidence intervals (CIs) for the slope approximations by applying the following criteria: 
+
+  * Slope estimate > 0 and 95% CI not containing 0 (i.e., positive .lower_ci bound): Increasing
+  * Slope estimate < 0 and 95% CI not containing 0 (i.e., negative .upper_ci bound): Decreasing
+  * Positive or negative slope estimate and 95% CI containing 0: Stable
