@@ -1,0 +1,2356 @@
+---
+title: "Drug Overdose Mortality Text Analytics Report (NSSP - ESSENCE) - Minnesota"
+
+description: This template is a Text Analysis Interactive Dashboard. 
+  Remember to change the title to your liking.
+  PLEASE Knit it with Parameters!!!
+output: 
+  flexdashboard::flex_dashboard:
+    vertical_layout: scroll
+    orientation: columns
+params:
+  username:
+    label: "NSSP Username: "
+    value: ""
+    input: text
+  start_date:
+    label: "Enter Start Date: "
+    value: !r as.Date(cut(as.Date("2022-01-01"), "week", start.on.monday = FALSE))
+    input: date
+  end_date:
+    label: "Enter End Date: "
+    value: !r Sys.Date()    
+    input: date
+---
+
+```{=html}
+<style>                     
+.navbar {
+  background-color:#005EAA;
+}
+</style>
+```
+```{=html}
+<style type="text/css">
+
+.chart-title {  /* chart_title  */
+   font-size: 20px;
+   font-weight: bold;
+
+</style>
+```
+
+```{r libraries, include = FALSE}
+library(Rnssp)
+library(tidyverse)
+library(tidytext)
+library(kableExtra)
+library(janitor)
+library(MMWRweek)
+library(lubridate)
+library(data.table)
+library(openxlsx)
+library(grid)
+library(gridExtra)
+library(shiny)
+library(flexdashboard)
+library(plotly)
+library(widyr)
+library(igraph)
+library(visNetwork)
+library(ggpubr)
+library(ggthemes)
+library(ggrepel)
+library(flextable)
+library(ggformula)
+library(ggraph)
+library(DT)
+# library(rgdal)
+library(sf)
+library(quanteda)
+library(quanteda.textmodels)
+library(quanteda.textstats)
+library(quanteda.textplots)
+library(packcircles)
+library(sparkline)
+library(magick)
+library(keyring)
+library(pdftools)
+library(dplyr)
+
+```
+
+```{css my-content, echo = FALSE}
+
+.value-box {
+    color: black;
+}
+
+```
+
+```{r utility functions, echo = FALSE, warning = FALSE, message = FALSE}
+
+clean_text_mortality <- function(tbl){
+  
+  .stopwords2 <- "\\bTYPE\\b|\\bNUMBERS\\b|\\bDUE\\b|\\bLEFT\\b|\\bRIGHT\\b|\\bMULTIPLE\\b|\\bDISORDER\\b|\\bDUE\\b|\\bUNKNOWN\\b|\\bUNDETERMINED\\b|\\bADVANCED\\b|\\bUNSPECIFIED\\b|\\bPROBABLE\\b|\\bPENDING\\b|\\bTOXICOLOGY\\b|\\bGROUND\\b|\\bLEVEL\\b|\\b2018\\b|\\b2019\\b|\\b2020\\b|\\b2021\\b|\\bEVENT\\b|\\b3A\\b|\\bPRIMARY\\b|\\bSECONDARY\\b|\\bFATAL\\b|\\bSUSTAINED\\b|\\bINVESTIGATION\\b|\\bIV\\b|\\bDISEASE\\b|\\bEVENT\\b|\\bCOMFORT\\b|\\bCARE\\b|\\bPOSITIVE\\b|\\bVIRAL\\b|\\bCOVI\\b|\\bTYPE\\b|\\bNATURAL\\b|\\bCONFIRMED\\b|\\bTEST\\b|\\bADVANCED\\b|\\bMIXED\\b|\\bHISTORY\\b|\\bTESTED\\b|\\bUNKNOWN\\b|\\bUNDETERMINED\\b|\\bRECENT\\b|\\bWALL\\b|\\bHEALTH\\b|\\bDEATH\\b|\\bDISEASES\\b"
+  
+  .pattern1 <- "[A-TV-Z][0-9][0-9AB]\\.?[0-9]{0,2}|PG[0-9]{0,3}"
+  .pattern2 <- "[[:cntrl:]]|<BR>|[#?!·.'+)(:=@%]"
+  .pattern3 <- "\\b[0-9]{1}\\b|\\b[0-9]{2}\\b|\\bNA\\b|\\|"
+  .pattern4 <- "[;/,\\\\*-]|([a-zA-Z])/([\\d])|([\\d])/([a-zA-Z])|([a-zA-Z])/([a-zA-Z])|([\\d])/([\\d])"
+  .pattern5 <- "\\b[A-Za-z]{2,20}\\b"
+  .pattern6 <- "[[:cntrl:]]|<BR>|[#?!·.'+)(:=@%]"
+  .pattern7 <- "\\b[0-9]{1}\\b|\\b[0-9]{2}\\b|\\bNA\\b|\\|"
+  .pattern8 <- "[;/,\\\\*-]|([a-zA-Z])/([\\d])|([\\d])/([a-zA-Z])|([a-zA-Z])/([a-zA-Z])|([\\d])/([\\d])"
+  
+  .data.tbl <- data.table(tbl)
+  
+  .data.tbl[, cause_of_death := str_remove_all(cause_of_death, .stopwords2)]
+  .data.tbl[, cause_of_death := str_remove_all(cause_of_death, .pattern1)]
+  .data.tbl[, cause_of_death := str_remove_all(cause_of_death, .pattern2)]
+  .data.tbl[, eac := str_remove_all(eac, .pattern2)]
+  .data.tbl[, cause_of_death := str_remove_all(cause_of_death, .pattern3)]
+  .data.tbl[, eac := str_remove_all(eac, .pattern3)]
+  .data.tbl[, cause_of_death := str_remove_all(cause_of_death, .pattern4)]
+  .data.tbl[, eac := str_replace_all(eac, .pattern4, " ")]
+  .data.tbl[, cause_of_death := str_squish(cause_of_death)]
+  .data.tbl[, eac := str_squish(eac)]
+  .data.tbl[, eac := str_remove_all(eac, .pattern5)]
+  .data.tbl[, eac := ifelse(nchar(eac) <= 2, "", eac)]
+  .data.tbl[, eac := str_replace_na(eac, replacement = "")]
+  .data.tbl[, cause_of_death := ifelse(nchar(cause_of_death) <= 3, "", cause_of_death)]
+  .data.tbl[, cause_of_death := str_replace_na(cause_of_death, "")]
+  .data.tbl[, cod_eac2 := str_c(cause_of_death, eac, sep = " ")]
+  .data.tbl[, cause_of_death := vapply(lapply(str_split(cause_of_death, " "), unique), paste, character(1L), collapse = " ")]
+  .data.tbl[, cod_eac2 := vapply(lapply(str_split(cod_eac2, " "), unique), paste, character(1L), collapse = " ")]
+  .data.tbl[, eac := vapply(lapply(str_split(eac, " "), unique), paste, character(1L), collapse = " ")]    
+  .data.tbl[, cod_eac2 := str_squish(cod_eac2)]
+
+  as_tibble(.data.tbl) 
+  
+}
+
+```
+
+```{r ESSENCE data pull, echo = FALSE, warning = FALSE, message = FALSE}
+
+# myProfile <- Credentials$new(
+# username = params$username,
+# password = params$password
+# )
+
+#key_set("Essence_Api", username = "USERNAME", keyring = NULL, prompt = "Password: ") #run this line when you changed password
+userProfile <- Credentials$new("USERNAME", key_get("Essence_Api", username = "USERNAME", keyring = NULL))
+
+endDate <- format(params$end_date, "%d%b%Y")
+startDate <- format(Sys.Date() - 365, "%d%b%Y")
+
+ksd_field_names <- c(
+  "EAC_or_Literal", 
+  "EAC_and_Literal", 
+  "KeywordSyndrome_Flat", 
+  "Cause_of_Death_Literal_Combined", 
+  "Cause_of_Death_1A_Literal", 
+  "Cause_of_Death_1B_Literal", 
+  "Cause_of_Death_1C_Literal", 
+  "Cause_of_Death_1D_Literal", 
+  "Cause_of_Death_Other_Condition_Literal", 
+  "ACME_Underlying_Cause", 
+  "C_EAC", 
+  paste0("C_EAC", 1:20),
+  "Underlying_Cause_Manual", 
+  "EAC", 
+  "WeekYear", 
+  "MonthYear", 
+  "QuarterYear", 
+  "Year"
+)
+
+fields <- paste0("&field=", paste(ksd_field_names, collapse = "&field="))
+
+url <- paste0("https://essence2.syndromicsurveillance.org/nssp_essence/api/dataDetails?endDate=", endDate, "&percentParam=noPercent&datasource=va_nsspdeathrecords&detector=nodetectordetector&startDate=", startDate, "&timeResolution=daily&userId=2362&site=904&aqtTarget=DataDetails", fields)
+
+# data <- fread("C:/Users/nageld1/Downloads/api_data.txt")
+url <- url %>% gsub("\n", "", .)
+api_data <- userProfile$get_api_data(url) %>%
+  pluck("dataDetails")
+
+data <- api_data %>%
+  clean_names() %>%
+  separate(week_year, c("year", "week"), sep = "-") %>%
+  mutate(
+    week = as.numeric(week),
+    year = as.numeric(year),
+    mmwr_week = MMWRweek2Date(year, week),
+    linenumber = row_number()
+  ) %>%
+  select(-eac) %>%
+  rename(
+    cause_of_death = cause_of_death_literal_combined,
+    cause_of_death_other = cause_of_death_other_condition_literal,
+    eac = c_eac
+  ) %>%
+  mutate(
+    cause_of_death = str_replace_all(cause_of_death, ";", " "),
+    cause_of_death = str_squish(cause_of_death),
+    cause_of_death_other = str_replace_all(cause_of_death_other, ";", " "),
+    cause_of_death_other = str_squish(cause_of_death_other),
+    cause_of_death_other = str_remove_all(cause_of_death_other, "none"),
+    cause_of_death = toupper(cause_of_death),
+    cause_of_death_other = toupper(cause_of_death_other),
+    cause_of_death = str_replace_all(cause_of_death, "COVID 19", "COVID-19"),
+    cause_of_death_other = str_replace_all(cause_of_death_other, "COVID 19", "COVID-19"),
+    eac = str_replace_all(eac, ";", " "),
+    eac = str_squish(eac),
+    eac = str_remove_all(eac, "none")
+  ) %>%
+  unite(cause_of_death, c("cause_of_death", "cause_of_death_other"), sep = " ") %>%
+  unite(cod_eac, c("cause_of_death", "eac"), sep = " ", remove = FALSE) %>%
+  relocate(week:linenumber) %>%
+  clean_text_mortality() %>%
+  relocate(cod_eac2, .after = cod_eac) %>%
+  filter(str_detect(acme_underlying_cause,
+                    "X4[0-4]|X6[0-4]|X85|Y1[0-4]"
+                    ))
+
+date_range <- paste(format(min(data$mmwr_week), "%B %d, %Y"), "to", format(Sys.Date(), "%B %d, %Y"))
+
+dictionary <- read_csv("C:/Users/ayorik1/Documents/Mortality/MortalityTextMining_MN/icd10_crosswalk_2022.csv") %>%
+  distinct(code, description, .keep_all = TRUE)
+
+added_codes <- tribble(~code, ~description, ~set,
+                       "X40-X44", "Unintentional overdoses", "ICD-10 2009",
+                       "X60-X64", "Intentional overdoses", "ICD-10 2009",
+                       "X85", "Homicide overdoses", "ICD-10 2009",
+                       "Y10-Y14", "Undetermined overdoses", "ICD-10 2009"
+                       )
+
+dictionary <- bind_rows(added_codes, dictionary) %>%
+  distinct(code, .keep_all = TRUE)
+  
+```
+
+# Background
+
+## Column
+
+### PURPOSE
+
+The purpose of this interactive dashboard is to summarize the Drug Overdose cause of death text and entity axis codes as part of the iterative development cycle, or as part of an initial description of the content of these fields. The data source used in this dashboard is the Mortality data source in NSSP-ESSENCE, which includes Cause of Death Literal and Entity Axis Code (EAC) fields.We are looking into specific drug overdose categories like `(Intentional, Undetermined, Unintentional, and Homicide)` using ICD-10 Codes like `(X60-X64,Y10-Y14,X40-X44, X85) respectively.
+
+### Interactive Visualizations
+
+The visualizations in this dashboard include total weekly volume of deaths from September 03, 2023 till date. The 200 most frequent n-gram frequencies of cause of death terms and EAC ICD-10 codes, and term co-occurrence network graphs for the `Cause_of_Death_Literal_Combined` and `C_EAC` fields. Potential clusters or groupings of terms are visualized by node color and can be selected from the "Select by group" drop down menu. All widgets were produced with the `plotly` and `visNetwork` R packages which provide hovering functionality such as displaying data point values, ICD-10 code descriptions, and co-occurrence frequencies.
+
+### Query Details
+
+Data pulled are **all** records from the Mortality Data specifically for drug overdose (Keyword Syndrome Development) data source in Production NSSP-ESSENCE.
+
+### Participating Jurisdictions
+
+```{r coverage map, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 7, fig.height = 5}
+
+# fig <- image_read_pdf("C:/Users/ayorik1/Documents/Mortality/MortalityTextMining_MN/mortality_coverage_map_may2022.pdf")
+# 
+# fig<- pdftools::pdf_text(pdf = "mortality_coverage_map_may2022.pdf")
+# fig <- pdf_convert(fig)
+# logo <- image_read("NSSP_logo.png") %>%
+#   image_scale("200x400")
+# 
+# image_composite(fig, logo, offset = paste0("+", 200, -380))
+
+#{r coverage map, echo = FALSE, warning = FALSE, message = FALSE, fig.width = 7, fig.height = 5}
+
+fig <- image_read("mortality_coverage_map_may2022.png")
+logo <- image_read("NSSP_logo.png") %>%
+  image_scale("200x400")
+image_composite(fig, logo, offset = paste0("+", 25, -380))
+
+```
+
+## Column
+
+### Drug Overdose Total Number of Deaths
+
+```{r total deaths, echo = FALSE, warning = FALSE, message = FALSE}
+
+valueBox(format(nrow(data), big.mark = ","), icon = "fa-hospital")
+
+```
+
+### Date Range
+
+```{r date range, echo = FALSE, warning = FALSE, message = FALSE}
+
+valueBox(date_range, icon = "fa-calendar", color = "orange")
+
+```
+
+### Weekly Deaths
+
+##### Data Source: Mortality (Drug Overdose) Data (Keyword Syndrome Development)
+
+```{r total volume, echo = FALSE, warning = FALSE, message = FALSE}
+
+library(magrittr)
+data %>%
+  count(mmwr_week) %>%
+  plot_ly(x = ~mmwr_week, 
+          y = ~n, 
+          type = "scatter", 
+          mode = "lines+markers",
+          hoverinfo = "text",
+          text = ~paste( 
+            "</br><b>MMWR Week:</b>", mmwr_week, 
+            "</br><b>Encounters:</b>", format(n, big.mark = ",")
+          )) %>%
+  layout(xaxis = list(title = "MMWR Week Date", rangemode = "tozero"), 
+         yaxis = list(title = "Encounters", rangemode = "tozero"),
+         height = 400) %>%
+  config(displayModeBar = FALSE)
+  
+```
+
+# Cause of Death {data-navmenu="Character and Token Length"}
+
+## Column
+
+### Weekly Mean Number of Characters in Cause of Death Field
+
+```{r mean characters COD, echo = FALSE, warning = FALSE, fig.width = 9, fig.height = 4}
+
+cod_eac_lengths <- data %>%
+  mutate(LengthCOD = str_count(cause_of_death),
+         tokensCOD = sapply(strsplit(cause_of_death, " "), length),
+         LengthEAC = str_count(eac),
+         tokensEAC = sapply(strsplit(eac, " "), length)) %>%
+  group_by(mmwr_week) %>%
+  summarise(MeanCharLengthCOD = mean(LengthCOD, na.rm = TRUE),
+            MedianCharLengthCOD = median(LengthCOD, na.rm = TRUE),
+            MeanTknLengthCOD = mean(tokensCOD, na.rm = TRUE),
+            MedianTknLengthCOD = median(tokensCOD, na.rm = TRUE),
+            MeanCharLengthEAC = mean(LengthEAC, na.rm = TRUE),
+            MedianCharLengthEAC = median(LengthEAC, na.rm = TRUE),
+            MeanTknLengthEAC = mean(tokensEAC, na.rm = TRUE),
+            MedianTknLengthEAC = median(tokensEAC, na.rm = TRUE),
+            N = n()) %>%
+  ungroup()
+
+cod_eac_lengths %>% 
+  plot_ly(x = ~mmwr_week, 
+          y = ~MeanCharLengthCOD, 
+          type = 'scatter', 
+          mode = 'lines', 
+          name = 'Mean') %>% 
+  layout(xaxis = list(title = "Week"), 
+         yaxis = list(title = "Characters", rangemode = "tozero")) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+### Weekly Median Number of Characters in Cause of Death Field
+
+```{r median characters COD, echo = FALSE, warning = FALSE, fig.width = 9, fig.height = 4}
+
+cod_eac_lengths %>% 
+  plot_ly(x = ~mmwr_week, 
+          y = ~MedianCharLengthCOD, 
+          type = 'scatter', 
+          mode = 'lines', 
+          name = 'Median') %>% 
+  layout(xaxis = list(title = "Week"), 
+         yaxis = list(title = "Characters", rangemode = "tozero")) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+## Column
+
+### Weekly Mean Number of Tokens in Cause of Death Field
+
+```{r mean tokens COD, echo = FALSE, error = FALSE, warning = FALSE, fig.width = 9, fig.height = 4}
+
+cod_eac_lengths %>% 
+  plot_ly(x = ~mmwr_week, 
+          y = ~MeanTknLengthCOD, 
+          type = 'scatter', 
+          mode = 'lines', 
+          name = 'Mean') %>% 
+  layout(xaxis = list(title = "Week"), 
+         yaxis = list(title = "Tokens", rangemode = "tozero")) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+### Weekly Median Number of Tokens in Cause of Death Field
+
+```{r median tokens COD, echo = FALSE, error = FALSE, warning = FALSE, fig.width = 9, fig.height = 4}
+
+cod_eac_lengths %>% 
+  plot_ly(x = ~mmwr_week, 
+          y = ~MedianTknLengthCOD, 
+          type = 'scatter', 
+          mode = 'lines', 
+          name = 'Mean') %>% 
+  layout(xaxis = list(title = "Week"), 
+         yaxis = list(title = "Tokens", rangemode = "tozero")) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+# EAC {data-navmenu="Character and Token Length"}
+
+## Column
+
+### Weekly Mean Number of Characters in EAC Field
+
+```{r mean characters EAC, echo = FALSE, warning = FALSE, fig.width = 9, fig.height = 4}
+
+cod_eac_lengths %>% 
+  plot_ly(x = ~mmwr_week, 
+          y = ~MeanCharLengthEAC, 
+          type = 'scatter', 
+          mode = 'lines', 
+          name = 'Mean') %>% 
+  layout(xaxis = list(title = "Week"), 
+         yaxis = list(title = "Characters", rangemode = "tozero")) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+### Weekly Median Number of Characters in EAC Field
+
+```{r median characters EAC, echo = FALSE, warning = FALSE, fig.width = 9, fig.height = 4}
+
+cod_eac_lengths %>% 
+  plot_ly(x = ~mmwr_week, 
+          y = ~MedianCharLengthEAC, 
+          type = 'scatter', 
+          mode = 'lines', 
+          name = 'Median') %>% 
+  layout(xaxis = list(title = "Week"), 
+         yaxis = list(title = "Characters", rangemode = "tozero")) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+## Column
+
+### Weekly Mean Number of Tokens in EAC Field
+
+```{r mean tokens EAC, echo = FALSE, warning = FALSE, fig.width = 9, fig.height = 4}
+
+cod_eac_lengths %>% 
+  plot_ly(x = ~mmwr_week, 
+          y = ~MeanTknLengthEAC, 
+          type = 'scatter', 
+          mode = 'lines', 
+          name = 'Mean') %>% 
+  layout(xaxis = list(title = "Week"), 
+         yaxis = list(title = "Tokens", rangemode = "tozero")) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+### Weekly Median Number of Tokens in EAC Field
+
+```{r median tokens EAC, echo = FALSE, warning = FALSE, fig.width = 9, fig.height = 4}
+
+cod_eac_lengths %>% 
+  plot_ly(x = ~mmwr_week, 
+          y = ~MedianTknLengthEAC, 
+          type = 'scatter', 
+          mode = 'lines', 
+          name = 'Mean') %>% 
+  layout(xaxis = list(title = "Week"), 
+         yaxis = list(title = "Tokens", rangemode = "tozero")) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+# Unigram {data-navmenu="N-gram Frequencies"}
+
+## Column
+
+### Cause of Death
+
+```{r COD unigram frequencies, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 50}
+
+unnested_cod_unigrams <- data %>% 
+  unnest_tokens(word, cause_of_death) %>% 
+  filter(!is.na(word)) %>%
+  anti_join(stop_words) 
+ 
+cod_unigram_200 <- unnested_cod_unigrams %>%
+  count(word, sort = TRUE) %>% 
+  top_n(200) %>%
+  slice(1:200) %>%
+  mutate(
+    word = str_to_upper(word),
+    word = fct_reorder(word, n, .desc = TRUE)
+  )
+
+cod_unigram_200 %>%
+  plot_ly(
+    x = ~n, 
+    y = ~word, 
+    type = "bar", 
+    orientation = "h",
+    hoverinfo = "text", 
+    text = ~paste(word,
+                  '<br> Frequency: ', format(n, big.mark = ",")),
+    textposition = "none"
+  ) %>%
+  layout(
+    title = "Top 200 Single Term Frequencies of Cause of Death",
+    xaxis = list(title = "Frequency"), 
+    yaxis = list(autorange = "reversed", title = "Word")
+  ) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+## Column
+
+### EAC
+
+```{r EAC unigram frequencies, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 50}
+
+unnested_eac_unigrams <- data %>% 
+  unnest_tokens(word, eac) %>% 
+  anti_join(stop_words) %>%
+    filter(nchar(word) >= 3) %>%
+  mutate(across(word,
+                ~str_replace(., "^y1[0-4]$", "y10-y14") %>%
+                  str_replace("^x4[0-4]$", "x40-x44") %>%
+                  str_replace("^x6[0-4]$", "x60-x64")
+  )) %>%
+  filter(word %in% c("y10-y14", "x40-x44", "x60-x64", "x85"))
+
+eac_unigram_200 <- unnested_eac_unigrams %>%
+  count(word, sort = TRUE) %>% 
+  ungroup() %>%
+  slice_head(n = 200) %>%
+  mutate(word = toupper(word)) %>%
+  left_join(dictionary, by = c("word" = "code")) %>%
+  distinct() %>%
+  mutate(word = fct_reorder(word, n, .desc = TRUE)) 
+
+eac_unigram_200 %>%
+  plot_ly(
+    x = ~n, 
+    y = ~description, 
+    type = "bar", 
+    orientation = "h",
+    hoverinfo = "text",
+    text = ~paste(word, ": ", description,
+                  '<br> Frequency: ', format(n, big.mark = ",")),
+    textposition = "none"
+  ) %>%
+  layout(
+    title = "Top 200 Single Term Frequencies of EAC",
+    xaxis = list(title = "Frequency"), 
+    yaxis = list(autorange = "reversed", title = "Word")
+  ) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+# Bigram {data-navmenu="N-gram Frequencies"}
+
+## Column
+
+### Cause of Death
+
+```{r COD bigram frequencies, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 50}
+
+unnested_cod_bigrams <- data %>% 
+  unnest_tokens(bigram, cause_of_death, token = "ngrams", n = 2) %>% 
+  separate(bigram, into = c("word1", "word2"), sep = " ", remove = FALSE) %>%
+  filter(
+    !is.na(bigram), 
+    !word1 %in% stop_words$word & !word2 %in% stop_words$word, 
+    nchar(word1) > 2 & nchar(word2) > 2, 
+    !grepl("\\d+", word1) & !grepl("\\d+", word2))
+
+cod_bigram_200 <- unnested_cod_bigrams %>%
+  count(bigram, sort = TRUE) %>% 
+  top_n(200) %>%
+  slice(1:200) %>%
+  mutate(
+    bigram = str_to_upper(bigram),
+    bigram = fct_reorder(bigram, n, .desc = TRUE)
+    )
+
+cod_bigram_200 %>%
+  plot_ly(
+    x = ~n, 
+    y = ~bigram, 
+    type = "bar", 
+    orientation = "h",  
+    hoverinfo = "text", 
+    text = ~paste(bigram,
+                  '<br> Frequency: ', format(n, big.mark = ",")),
+    textposition = "none"
+  ) %>%
+  layout(
+    title = "Top 200 Bigram Frequencies of Cause of Death",
+    xaxis = list(title = "Frequency"), 
+    yaxis = list(autorange = "reversed", title = "Bigram")
+  ) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+
+```{r EAC bigram frequencies, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 50}
+
+unnested_eac_bigrams <- data %>% 
+  unnest_tokens(bigram, eac, token = "ngrams", n = 2) %>% 
+  filter(!is.na(bigram)) %>%
+  mutate(across(c(bigram),
+                ~str_replace(., "^y1[0-4]|y1[0-4]$", "y10_y14") %>%
+                  str_replace("^x4[0-4]|x4[0-4]$", "x40_x44") %>%
+                  str_replace("^x6[0-4]|x6[0-4]$", "x60_x64")
+  )) %>%
+  separate(bigram, c("code1", "code2"), sep = " ", remove = FALSE) %>%
+  filter(nchar(code1) >= 3 & nchar(code2) >= 3) %>%
+  rowwise() %>%
+  mutate(bigramID = list (sort(c(code1, code2)))) %>%
+  mutate(bigramID = paste(bigramID,  collapse = "-")) %>%
+    ungroup() %>%
+  mutate(across(c(code1, code2),
+                ~str_replace_all(., "_", "-")
+                
+                ))
+  # filter(code1 %in% c("y10-y14", "x40-x44", "x60-x64", "x85"),
+  #        code2 %in% c("y10-y14", "x40-x44", "x60-x64", "x85")
+  #        )
+
+eac_bigram_200 <- unnested_eac_bigrams %>%
+  count(bigramID, sort = TRUE) %>%
+  ungroup() %>%
+  top_n(200) %>%
+  slice(1:200) %>%
+  separate(bigramID, c("code1", "code2"), sep = "-", remove = FALSE) %>%
+  mutate(
+    code1 = toupper(code1),
+    code2 = toupper(code2),
+    bigram = paste(code1, code2, sep = " ")
+  ) %>%
+  left_join(dictionary, by = c("code1" = "code")) %>%
+  left_join(dictionary, by = c("code2" = "code")) %>%
+  rename(
+    description1 = description.x,
+    description2 = description.y
+  ) %>%
+  mutate(bigram = fct_reorder(bigram, n, .desc = TRUE)) %>%
+  distinct()
+
+# eac_bigram_200 %>%
+#   plot_ly(
+#     x = ~n,
+#     y = ~bigram,
+#     type = "bar",
+#     orientation = "h",
+#     hoverinfo = "text",
+#     text = ~paste(code1, ": ", description1,
+#                   "<br>", code2, ": ", description2,
+#                   "<br> Frequency: ", format(n, big.mark = ",")),
+#     textposition = "none"
+#   ) %>%
+#   layout(
+#     title = "Top 200 Bigram Frequencies of EAC",
+#     xaxis = list(title = "Frequency"),
+#     yaxis = list(autorange = "reversed", title = "Bigram")
+#   ) %>%
+#   config(displayModeBar = FALSE)
+
+```
+
+# Trigram {data-navmenu="N-gram Frequencies"}
+
+## Column
+
+### Cause of Death
+
+```{r COD trigram frequencies, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 50}
+
+cod_trigram_200 <- data %>% 
+  unnest_tokens(trigram, cause_of_death, token = "ngrams", n = 3) %>%
+  separate(trigram, into = c("word1", "word2", "word3"), sep = " ", remove = FALSE) %>%
+  filter(
+    !is.na(trigram), 
+    !word1 %in% stop_words$word & !word2 %in% stop_words$word & !word3 %in% stop_words$word, 
+    nchar(word1) > 2 & nchar(word2) > 2 & nchar(word3) > 2, 
+    !grepl("\\d+", word1) & !grepl("\\d+", word2) & !grepl("\\d+", word3)
+  ) %>%
+ 
+  count(trigram, sort = TRUE) %>% 
+  top_n(200) %>%
+  slice(1:200) %>%
+  mutate(
+    trigram = str_to_upper(trigram),
+    trigram = fct_reorder(trigram, n, .desc = TRUE)
+  )
+
+cod_trigram_200 %>%
+  plot_ly(
+    x = ~n, 
+    y = ~trigram, 
+    type = "bar", 
+    orientation = "h",  
+    hoverinfo = "text",
+    text = ~paste(trigram,
+                  '<br> Frequency: ', format(n, big.mark = ",")),
+    textposition = "none"
+  ) %>%
+  layout(
+    title = "Top 200 Trigram Frequencies of Chief Complaint Parsed", 
+    xaxis = list(title = "Frequency"), 
+    yaxis = list(autorange = "reversed", title = "Trigram")
+  ) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+
+```{r EAC trigram frequencies, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 50, eval = F}
+
+eac_trigram_200 <- data %>% 
+  unnest_tokens(trigram, eac, token = "ngrams", n = 3) %>% 
+  filter(!is.na(trigram)) %>%
+  mutate(across(c(trigram),
+                ~str_replace(., "^y1[0-4]|y1[0-4]$", "y10_y14") %>%
+                  str_replace(" y1[0-4] ", " y10_y14 ") %>%
+                  str_replace("^x4[0-4]|x4[0-4]$", "x40_x44") %>%
+                  str_replace(" x4[0-4] ", " x40_x44 ") %>%
+                  str_replace("^x6[0-4]|x6[0-4]$", "x60_x64") %>%
+                  str_replace(" x6[0-4] ", " x60_x64 ")
+  )) %>%
+  separate(trigram, c("code1", "code2", "code3"), remove = FALSE) %>%
+  filter(nchar(code1) >= 3 & nchar(code2) >= 3 & nchar(code3) >= 3) %>%
+  mutate(across(c(code1, code2, code3),
+                ~str_replace(., "^y1[0-4]$", "y10-y14") %>%
+                  str_replace("^x4[0-4]$", "x40-x44") %>%
+                  str_replace("^x6[0-4]$", "x60-x64")
+  )) %>%
+  rowwise() %>%
+  mutate(
+    trigramID = list(c(code1, code2, code3)),
+    trigramID = paste(sort(trigramID),  collapse = "-")
+  ) %>%
+  count(trigramID, sort = TRUE) %>%
+  ungroup() %>%
+  top_n(200) %>% 
+  slice(1:200) %>%
+  separate(trigramID, c("code1", "code2", "code3"), sep = "-", remove = FALSE) %>%
+  mutate(
+    code1 = toupper(code1), 
+    code2 = toupper(code2), 
+    code3 = toupper(code3),
+    trigram = paste(code1, code2, code3, sep = " ")
+  ) %>%
+  left_join(dictionary, by = c("code1" = "code")) %>%
+  left_join(dictionary, by = c("code2" = "code")) %>%
+  left_join(dictionary, by = c("code3" = "code")) %>%
+  rename(
+    description1 = description.x, 
+    description2 = description.y,
+    description3 = description
+  ) %>%
+  mutate(trigram = fct_reorder(trigram, n, .desc = TRUE)) %>%
+  distinct()
+
+eac_trigram_200 %>%
+  plot_ly(
+    x = ~n, 
+    y = ~trigram, 
+    type = "bar", 
+    orientation = "h", 
+    hoverinfo = "text",
+    text = ~paste(code1, ": ", description1,
+                  "<br>", code2, ": ", description2, 
+                  "<br>", code3, ": ", description3, 
+                  "<br> Frequency: ", format(n, big.mark = ",")),
+    textposition = "none"
+  ) %>%
+  layout(
+    title = "Top 200 Trigram Frequencies of Discharge Diagnosis",
+    xaxis = list(title = "Frequency"), 
+    yaxis = list(autorange = "reversed", title = "Trigram")
+  ) %>%
+  config(displayModeBar = FALSE)
+
+```
+
+# Cause of Death {data-navmenu="Term Network Graphs"}
+
+### Cause of Death Term Co-occurrence Network Graph
+
+```{r COD network, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 10}
+
+edges <- unnested_cod_unigrams %>%
+  pairwise_count(word, linenumber, sort=TRUE, upper=FALSE) %>%
+  top_n(200) %>%
+  slice(1:200) %>%
+  mutate(
+    item1 = toupper(item1),
+    item2 = toupper(item2)
+  ) %>%
+  rename(
+    from = item1, 
+    to = item2, 
+    value = n
+  ) %>%
+  mutate(title = value)
+
+cluster_df <- edges %>%
+  graph_from_data_frame(directed = FALSE) %>%
+  cluster_louvain() %>%
+  membership() %>%
+  as.list() %>%
+  as.data.frame() %>%
+  pivot_longer(cols = everything(), names_to = "label", values_to = "group") 
+
+nodes <- unique(c(edges$from, edges$to)) %>%
+  as_tibble() %>%
+  rename(label = value) %>%
+  mutate(
+    id = label,
+    font.size = 30
+  ) %>%
+  left_join(cluster_df, by = "label")
+
+visNetwork(nodes, edges, height = "500px", width = "100%") %>%
+  visPhysics(solver = "forceAtlas2Based") %>%
+  visInteraction(zoomView = FALSE) %>%
+  visNodes(shape = "dot",
+  color = list(background = "#0085AF", border = "#013848", highlight = "#FF8000"),
+  shadow = list(enabled = TRUE, size = 10)) %>%
+  visEdges(color = list(color = "#0085AF", highlight = "#C62F4B")) %>%
+  visOptions(selectedBy = "group",
+             highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+             nodesIdSelection = TRUE) %>%
+  visLayout(randomSeed = 1993)
+
+```
+
+# Cause of Death and EAC {data-navmenu="Term Network Graphs"}
+
+### COD-EAC Term Co-occurrence Network Graph
+
+```{r CODEAC network, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 10}
+
+edges <- data %>%
+  unnest_tokens(word, cod_eac) %>%
+  filter(!is.na(word)) %>%
+  filter(nchar(word) >= 3) %>%
+  anti_join(stop_words) %>%
+  pairwise_count(word, linenumber, sort = TRUE, upper = FALSE) %>%
+  filter(across(c(item1, item2), ~!. %in% c("hypertension", "hypertensive"))) %>%
+  top_n(200) %>%
+  slice(1:200) %>%
+  mutate(
+    item1 = toupper(item1),
+    item2 = toupper(item2)
+  ) %>%
+  rename(
+    from = item1, 
+    to = item2, 
+    value = n
+  ) %>%
+  mutate(title = value)
+
+cluster_df <- edges %>%
+  graph_from_data_frame(directed = FALSE) %>%
+  cluster_louvain() %>%
+  membership() %>%
+  as.list() %>%
+  as.data.frame() %>%
+  pivot_longer(cols = everything(), names_to = "label", values_to = "group") 
+
+nodes <- unique(c(edges$from, edges$to)) %>%
+  as_tibble() %>%
+  rename(label = value) %>%
+  mutate(
+    id = label,
+    font.size = 30
+  ) %>%
+  left_join(cluster_df, by = "label") %>%
+  left_join(dictionary, by = c("id" = "code")) %>%
+  rename(title = description)
+
+visNetwork(nodes, edges, height = "500px", width = "100%") %>%
+  visPhysics(solver = "forceAtlas2Based") %>%
+  visInteraction(zoomView = FALSE) %>%
+  visNodes(shape = "dot",
+  color = list(background = "#0085AF", border = "#013848", highlight = "#FF8000"),
+  shadow = list(enabled = TRUE, size = 10)) %>%
+  visEdges(color = list(color = "#0085AF", highlight = "#C62F4B")) %>%
+  visOptions(selectedBy = "group",
+             highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+             nodesIdSelection = TRUE) %>%
+  visLayout(randomSeed = 1993)
+
+```
+
+# Cause of Death Correlation {data-navmenu="Term Network Graphs"}
+
+### Cause of Death Term Correlation Network Graph
+
+```{r COD correlation network, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 10}
+
+cod_cor1 <- unnested_cod_unigrams %>%
+    select(
+    linenumber,
+    word
+  ) %>%
+  group_by(word) %>%
+  filter(n() >= 20) %>%
+  pairwise_cor(word, linenumber, sort = TRUE) %>%
+  filter(correlation > 0.15) %>%
+  mutate(
+    pair1 = paste(item1, item2),
+    pair2 = paste(item2, item1)
+    ) %>%
+  #filter(!pair1 %in% unnested_cod_bigrams$bigram) %>%
+  #filter(!pair2 %in% unnested_cod_bigrams$bigram) %>%
+  mutate_at(.vars = c("item1", "item2"), ~toupper(.))
+
+cod_cor_edges <- cod_cor1 %>%
+  mutate(id = ifelse(item1 < item2, paste(item1, item2), paste(item2, item1))) %>%
+  distinct(id, .keep_all = TRUE) %>%
+  select(
+    from = item1, 
+    to = item2,
+    value = correlation
+  ) %>%
+  mutate(title = value)
+
+cod_cor_cluster_df <- cod_cor_edges %>%
+  graph_from_data_frame(directed = FALSE) %>%
+  cluster_louvain() %>%
+  membership() %>%
+  as.list() %>%
+  as.data.frame() %>%
+  pivot_longer(cols = everything(), names_to = "label", values_to = "group") 
+
+cod_cor_nodes <- unique(c(cod_cor_edges$from, cod_cor_edges$to)) %>%
+  as_tibble() %>%
+  rename(label = value) %>%
+  mutate(
+    id = label, 
+    font.size = 30
+  ) %>%
+  left_join(cod_cor_cluster_df, by = "label") 
+
+visNetwork(
+  cod_cor_nodes, 
+  cod_cor_edges, 
+  height = "500px", 
+  width = "100%",
+  main = list(
+    text = "Pairs of terms with at least a 0.15 correlation of appearing within the same cause of death literal. Consecutive term pairs/bigrams removed.",
+    style = "font-family:Arial;font-size:15px;font-weight:bold;text-align:center"
+  )
+) %>%
+  visPhysics(solver = "forceAtlas2Based") %>%
+  visInteraction(zoomView = FALSE) %>%
+  visNodes(
+    shape = "dot", 
+    color = list(background = "#0085AF", border = "#013848", highlight = "#FF8000"), 
+    shadow = list(enbaled = TRUE, size = 10)
+  ) %>%
+  visEdges(color = list(color = "#0085AF", highlight = "#C62F4B")) %>%
+  visOptions(
+    selectedBy = "group", 
+    highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+    nodesIdSelection = TRUE
+  ) %>%
+  visLayout(randomSeed = 1993)
+
+```
+
+### Cause of Death Parsed Term Correlation Search Table
+
+```{r COD search table, echo = FALSE, warning = FALSE, message = FALSE}
+
+cod_cor1 %>%
+  select(
+    `Term 1` = item1, 
+    `Term 2` = item2, 
+    `Correlation` = correlation
+  ) %>%
+  mutate(
+    `Term 1` = toupper(`Term 1`),
+    `Term 2` = toupper(`Term 2`),
+    `Correlation` = format(round(`Correlation`, 3), nsmall = 3)
+  ) %>%
+  datatable(
+    filter = list(position = "top", clear = FALSE),
+    options = list(
+      pageLength = 40, 
+      scrollY = 700, 
+      columnDefs = list(list(className = "dt-left", targets = "_all"))
+    )
+  )
+
+```
+
+# EAC Correlation {data-navmenu="Term Network Graphs"}
+
+### EAC Term Correlation Network Graph
+
+```{r EAC correlation network, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 10}
+
+eac_cor <- unnested_eac_unigrams %>%
+    select(
+    linenumber,
+    word
+  ) %>%
+  group_by(word) %>%
+  filter(n() >= 20) %>%
+  pairwise_cor(word, linenumber, sort = TRUE) %>%
+  # filter(correlation > 0.15) %>%
+  mutate(
+    pair1 = paste(item1, item2),
+    pair2 = paste(item2, item1)
+    ) %>%
+  # filter(!pair1 %in% unnested_eac_bigrams$bigram) %>%
+  # filter(!pair2 %in% unnested_eac_bigrams$bigram) %>%
+  mutate_at(.vars = c("item1", "item2"), ~toupper(.))
+
+eac_cor_edges <- eac_cor %>%
+  mutate(id = ifelse(item1 < item2, paste(item1, item2), paste(item2, item1))) %>%
+  distinct(id, .keep_all = TRUE) %>%
+  select(
+    from = item1, 
+    to = item2,
+    value = correlation
+  ) %>%
+  mutate(title = value)
+
+eac_cor_cluster_df <- eac_cor_edges %>%
+  graph_from_data_frame(directed = FALSE) %>%
+  cluster_louvain() %>%
+  membership() %>%
+  as.list() %>%
+  as.data.frame() %>%
+  pivot_longer(cols = everything(), names_to = "label", values_to = "group")
+
+eac_cor_nodes <- unique(c(eac_cor_edges$from, eac_cor_edges$to)) %>%
+  as_tibble() %>%
+  rename(label = value) %>%
+  mutate(
+    id = label, 
+    font.size = 40
+  ) %>%
+  left_join(eac_cor_cluster_df, by = "label") %>%
+  left_join(dictionary, by = c("id" = "code")) %>%
+  rename(title = description)
+
+visNetwork(
+  eac_cor_nodes, 
+  eac_cor_edges, 
+  height = "500px", 
+  width = "100%",
+  main = list(
+    text = "Pairs of codes with at least a 0.15 correlation of appearing within the same EAC.",
+    style = "font-family:Arial;font-size:15px;font-weight:bold;text-align:center"
+  )
+) %>%
+  visPhysics(solver = "forceAtlas2Based") %>%
+  visInteraction(zoomView = FALSE) %>%
+  visNodes(
+    shape = "dot", 
+    color = list(background = "#0085AF", border = "#013848", highlight = "#FF8000"), 
+    shadow = list(enbaled = TRUE, size = 10)
+  ) %>%
+  visEdges(color = list(color = "#0085AF", highlight = "#C62F4B")) %>%
+  visOptions(
+    selectedBy = "group", 
+    highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+    nodesIdSelection = TRUE
+  ) %>%
+  visLayout(randomSeed = 1993)
+
+```
+
+### EAC Term Correlation Search Table
+
+```{r EAC search table, echo = FALSE, warning = FALSE, message = FALSE}
+
+eac_cor %>%
+  left_join(dictionary, by = c("item1" = "code")) %>%
+  rename(description1 = description) %>%
+  select(-set) %>%
+  left_join(dictionary, by = c("item2" = "code")) %>%
+  rename(description2 = description) %>%
+  select(-set) %>%
+  mutate(
+    item1 = paste0(item1, ": ", description1),
+    item2 = paste0(item2, ": ", description2)
+  ) %>%
+  select(
+    `Code 1` = item1, 
+    `Code 2` = item2, 
+    `Correlation` = correlation
+  ) %>%
+  mutate(`Correlation` = format(round(`Correlation`, 3), nsmall = 3)) %>%
+  datatable(
+    filter = list(position = "top", clear = FALSE),
+    options = list(
+      pageLength = 40, 
+      scrollY = 700, 
+      columnDefs = list(list(className = "dt-left", targets = "_all"))
+    )
+  )
+
+```
+
+# Increasing Unigrams {data-navmenu="Significant Change in Term Usage Over Time"}
+
+Trends represent the proportion of term occurrences on a weekly time resolution. The numerator is the number of occurrences of the term in a specific week, while the denominator is the sum of all term frequencies in that week. A binomial regression model is fit to each time series to determine if term occurrence has changed significantly over time. Terms with a positive slope (test statistic) and adjusted p-value \< 0.01 are categorized as having significant increase, while terms with a negative slope and adjusted p-value \< 0.01 are categorized as having significant decrease.
+
+```{r ngram analysis, echo = FALSE, warning = FALSE, message = FALSE}
+
+cod_unigram_analysis <- unnested_cod_unigrams %>%
+  mutate(time_floor = mmwr_week) %>%
+  count(time_floor, word) %>%
+  complete(word, time_floor, fill = list(n = 0)) %>%
+  group_by(time_floor) %>%
+  mutate(time_total = sum(n)) %>%
+  group_by(word) %>%
+  mutate(ngram_total = sum(n)) %>%
+  rename(count = n) %>%
+  filter(ngram_total > 30) %>%
+  mutate(
+    frequency = (count / time_total),
+    frequency = ifelse(is.infinite(frequency), 0, frequency),
+    frequency = ifelse(is.nan(frequency), 0, frequency)
+  ) %>%
+  nest(data = -word) %>%
+  mutate(
+    models = map(data, ~glm(cbind(count, time_total - count) ~ time_floor, ., family = "binomial") %>% tidy)
+  ) %>%
+  unnest(models)
+
+if(nrow(cod_unigram_analysis) > 0){
+  cod_unigram_filtered <- cod_unigram_analysis %>%
+    filter(term == "time_floor") %>%
+    mutate(adjusted.p.value = p.adjust(p.value)) %>%
+    filter(adjusted.p.value < 0.05)  %>%
+    arrange(adjusted.p.value) %>%
+    unnest(data) %>%
+    mutate(word = toupper(word))
+}else{
+  cod_unigram_filtered <- cod_unigram_analysis %>%
+    mutate(statistic = NA)
+}
+
+cod_bigram_analysis <- unnested_cod_bigrams %>%
+  mutate(time_floor = mmwr_week) %>%
+  count(time_floor, bigram) %>%
+  complete(bigram, time_floor, fill = list(n = 0)) %>%
+  group_by(time_floor) %>%
+  mutate(time_total = sum(n)) %>%
+  group_by(bigram) %>%
+  mutate(ngram_total = sum(n)) %>%
+  rename(count = n) %>%
+  filter(ngram_total > 30) %>%
+  mutate(
+    frequency = (count / time_total),
+    frequency = ifelse(is.infinite(frequency), 0, frequency),
+    frequency = ifelse(is.nan(frequency), 0, frequency)
+  ) %>%
+  nest(data = -bigram) %>%
+  mutate(
+    models = map(data, ~glm(cbind(count, time_total - count) ~ time_floor, ., family = "binomial") %>% tidy)
+  ) %>%
+  unnest(models)
+
+if(nrow(cod_bigram_analysis) > 0){
+  cod_bigram_filtered <- cod_bigram_analysis %>%
+    filter(term == "time_floor") %>%
+    mutate(adjusted.p.value = p.adjust(p.value)) %>%
+    filter(adjusted.p.value < 0.05)  %>%
+    arrange(adjusted.p.value) %>%
+    unnest(data) %>%
+    mutate(bigram = toupper(bigram))
+}else{
+  cod_bigram_filtered <- cod_bigram_analysis %>%
+    mutate(statistic = NA)
+}
+
+eac_unigram_analysis <- unnested_eac_unigrams %>%
+  mutate(time_floor = mmwr_week) %>%
+  count(time_floor, word) %>%
+  complete(word, time_floor, fill = list(n = 0)) %>%
+  group_by(time_floor) %>%
+  mutate(time_total = sum(n)) %>%
+  group_by(word) %>%
+  mutate(ngram_total = sum(n)) %>%
+  rename(count = n) %>%
+  #filter(ngram_total > 30) %>%
+  mutate(
+    frequency = (count / time_total),
+    frequency = ifelse(is.infinite(frequency), 0, frequency),
+    frequency = ifelse(is.nan(frequency), 0, frequency)
+  ) %>%
+  nest(data = -word) %>%
+  mutate(
+    models = map(data, ~glm(cbind(count, time_total - count) ~ time_floor, ., family = "binomial") %>% tidy)
+  ) %>%
+  unnest(models)
+
+if(nrow(eac_unigram_analysis) > 0){
+  eac_unigram_filtered <- eac_unigram_analysis %>%
+    filter(term == "time_floor") %>%
+    mutate(adjusted.p.value = p.adjust(p.value)) %>%
+    filter(adjusted.p.value < 0.05)  %>%
+    arrange(adjusted.p.value) %>%
+    unnest(data) %>%
+    mutate(word = toupper(word)) %>%
+    inner_join(dictionary, by = c("word" = "code"))
+}else{
+  eac_unigram_filtered <- eac_unigram_analysis %>%
+    mutate(statistic = NA)
+}
+
+eac_bigram_analysis <- unnested_eac_bigrams %>%
+  mutate(time_floor = mmwr_week) %>%
+  count(time_floor, bigram) %>%
+  complete(bigram, time_floor, fill = list(n = 0)) %>%
+  group_by(time_floor) %>%
+  mutate(time_total = sum(n)) %>%
+  group_by(bigram) %>%
+  mutate(ngram_total = sum(n)) %>%
+  rename(count = n) %>%
+  filter(ngram_total > 30) %>%
+  mutate(
+    frequency = (count / time_total),
+    frequency = ifelse(is.infinite(frequency), 0, frequency),
+    frequency = ifelse(is.nan(frequency), 0, frequency)
+  ) %>%
+  nest(data = -bigram) %>%
+  mutate(
+    models = map(data, ~glm(cbind(count, time_total - count) ~ time_floor, ., family = "binomial") %>% tidy)
+  ) %>%
+  unnest(models)
+
+if(nrow(eac_bigram_analysis) > 0){
+  eac_bigram_filtered <- eac_bigram_analysis %>%
+    filter(term == "time_floor") %>%
+    mutate(adjusted.p.value = p.adjust(p.value)) %>%
+    filter(adjusted.p.value < 0.05)  %>%
+    arrange(adjusted.p.value) %>%
+    unnest(data) %>%
+    mutate(bigram = toupper(bigram)) %>%
+    separate(bigram, c("code1", "code2"), remove = FALSE) %>%
+    inner_join(dictionary, by = c("code1" = "code")) %>%
+    inner_join(dictionary, by = c("code2" = "code")) %>%
+    rename(
+      description1 = description.x,
+      description2 = description.y
+      )
+}else{
+  eac_bigram_filtered <- eac_bigram_analysis %>%
+    mutate(statistic = NA)
+}
+
+cod_unigrams_increasing <- cod_unigram_filtered %>%
+  filter(statistic > 0)
+
+cod_unigrams_decreasing <- cod_unigram_filtered %>%
+  filter(statistic < 0)
+
+cod_bigrams_increasing <- cod_bigram_filtered %>%
+  filter(statistic > 0)
+
+cod_bigrams_decreasing <- cod_bigram_filtered %>%
+  filter(statistic < 0)
+
+eac_unigrams_increasing <- eac_unigram_filtered %>%
+  filter(statistic > 0)
+
+eac_unigrams_decreasing <- eac_unigram_filtered %>%
+  filter(statistic < 0)
+
+eac_bigrams_increasing <- eac_bigram_filtered %>%
+  filter(statistic > 0)
+
+eac_bigrams_decreasing <- eac_bigram_filtered %>%
+  filter(statistic < 0)
+
+ht1 <- max(length(unique(cod_unigrams_increasing$word)), length(unique(eac_unigrams_increasing$word))) * 3
+ht2 <- max(length(unique(cod_unigrams_decreasing$word)), length(unique(eac_unigrams_decreasing$word))) * 3
+
+ht3 <- max(length(unique(cod_bigrams_increasing$bigram)), length(unique(eac_bigrams_increasing$bigram))) * 3
+ht4 <- max(length(unique(cod_bigrams_decreasing$bigram)), length(unique(eac_bigrams_decreasing$bigram))) * 3
+
+```
+
+## Column
+
+### Change in Individual COD Unigram Trends - Increasing
+
+```{r COD increasing unigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht1}
+
+pal <- c("#003C67FF", "#4A6990FF")
+
+if(nrow(cod_unigrams_increasing) > 0){
+
+  tab_gg <- cod_unigrams_increasing %>%
+    select(word, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    arrange(word) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x){
+
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(x = "",
+             y = "") +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+
+    }))
+
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("word", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      word = "Cause of Death Unigram",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box() %>%
+    colformat_double(digits = 2)
+
+  ft_gg
+
+}else{
+
+  cat("No significantly increasing unigrams found.")
+
+}
+
+```
+
+## Column
+
+### Change in Individual EAC Unigram Trends - Increasing
+
+```{r EAC increasing unigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht1}
+
+if(nrow(eac_unigrams_increasing) > 0){
+
+  tab_gg <- eac_unigrams_increasing %>%
+    select(word, description, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    arrange(word) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x){
+
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(x = "",
+             y = "") +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+
+    }))
+
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("word", "description", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      word = "ICD-10 Unigram",
+      description = "Description",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box()  %>%
+    colformat_double(digits = 2)
+
+  ft_gg
+
+}else{
+
+  cat("No significantly increasing unigrams found.")
+
+}
+
+```
+
+# Decreasing Unigrams {data-navmenu="Significant Change in Term Usage Over Time"}
+
+Trends represent the proportion of term occurrences on a weekly time resolution. The numerator is the number of occurrences of the term in a specific week, while the denominator is the sum of all term frequencies in that week. A binomial regression model is fit to each time series to determine if term occurrence has changed significantly over time. Terms with a positive slope (test statistic) and adjusted p-value \< 0.01 are categorized as having significant increase, while terms with a negative slope and adjusted p-value \< 0.01 are categorized as having significant decrease.
+
+## Column
+
+### Change in Individual CC Unigram Trends - Decreasing
+
+```{r COD decreasing unigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht2}
+
+if(nrow(cod_unigrams_decreasing) > 0){
+
+  tab_gg <- cod_unigrams_decreasing %>%
+    select(word, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    arrange(word) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x){
+
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(x = "",
+             y = "") +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+
+    }))
+
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("word", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      word = "Cause of Death Unigram",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box() %>%
+    colformat_double(digits = 2)
+
+  ft_gg
+
+}else{
+
+  cat("No significantly decreasing unigrams found.")
+
+}
+
+```
+
+## Column
+
+### Change in Individual EAC Term Trends - Decreasing
+
+```{r EAC decreasing unigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht2}
+
+if(nrow(eac_unigrams_decreasing) > 0){
+
+  tab_gg <- eac_unigrams_decreasing %>%
+    select(word, description, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    arrange(word) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x){
+
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(x = "",
+             y = "") +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+
+    }))
+
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("word", "description", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      word = "ICD-10 Unigram",
+      description = "Description",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box()  %>%
+    colformat_double(digits = 2)
+
+  ft_gg
+
+}else{
+
+  cat("No significantly decreasing unigrams found.")
+}
+
+```
+
+# Increasing Bigrams {data-navmenu="Significant Change in Term Usage Over Time"}
+
+Trends represent the proportion of bigram occurrences on a weekly time resolution. The numerator is the number of occurrences of the bigram in a specific week, while the denominator is the sum of all bigram frequencies in that week. A binomial regression model is fit to each time series to determine if bigram occurrence has changed significantly over time. Bigrams with a positive slope (test statistic) and adjusted p-value \< 0.01 are categorized as having significant increase, while bigrams with a negative slope and adjusted p-value \< 0.01 are categorized as having significant decrease.
+
+## Column
+
+### Change in CC Bigram Trends - Increasing
+
+```{r COD increasing bigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht3}
+
+pal <- c("#003C67FF", "#4A6990FF")
+
+if(nrow(cod_bigrams_increasing) > 0){
+
+  tab_gg <- cod_bigrams_increasing %>%
+    select(bigram, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    arrange(bigram) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x){
+
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(x = "",
+             y = "") +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+
+    }))
+
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("bigram", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      bigram = "Cause of Death Bigram",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box() %>%
+    colformat_double(digits = 2)
+
+  ft_gg
+
+}else{
+
+  cat("No significantly increasing bigrams found.")
+
+}
+
+```
+
+## Column
+
+### Change in EAC Bigram Trends - Increasing
+
+```{r EAC increasing bigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht3}
+
+if(nrow(eac_bigrams_increasing) > 0){
+
+  tab_gg <- eac_bigrams_increasing %>%
+    select(bigram, description1, description2, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    arrange(bigram) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x){
+
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(x = "",
+             y = "")
+    }))
+
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("bigram", "description1", "description2", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      bigram = "ICD-10 Bigram",
+      description1 = "Description 1",
+      description2 = "Description 2",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box()  %>%
+    colformat_double(digits = 2)
+
+  ft_gg
+
+}else{
+
+  cat("No significantly increasing bigrams found.")
+
+}
+
+```
+
+# Decreasing Bigrams {data-navmenu="Significant Change in Term Usage Over Time"}
+
+Trends represent the proportion of bigram occurrences on a weekly time resolution. The numerator is the number of occurrences of the bigram in a specific week, while the denominator is the sum of all bigram frequencies in that week. A binomial regression model is fit to each time series to determine if bigram occurrence has changed significantly over time. Bigrams with a positive slope (test statistic) and adjusted p-value \< 0.01 are categorized as having significant increase, while bigrams with a negative slope and adjusted p-value \< 0.01 are categorized as having significant decrease.
+
+## Column
+
+### Change in CC Bigram Trends - Decreasing
+
+```{r COD decreasing bigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht4}
+
+pal <- c("#003C67FF", "#4A6990FF")
+
+if(nrow(cod_bigrams_decreasing) > 0){
+
+  tab_gg <- cod_bigrams_decreasing %>%
+    select(bigram, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    arrange(bigram) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x){
+
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(x = "",
+             y = "") +
+        theme(plot.margin = unit(c(0.5, 1, 0.5, 0.5), "lines"))
+
+    }))
+
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("bigram", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      bigram = "Cause of Death Bigram",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box() %>%
+    colformat_double(digits = 2)
+
+  ft_gg
+
+}else{
+
+  cat("No significantly decreasing bigrams found.")
+
+}
+
+```
+
+## Column
+
+### Change in DD Bigram Trends - Decreasing
+
+```{r EAC decreasing bigram, echo = FALSE, message = FALSE, warning = FALSE, fig.height = ht4}
+
+if(nrow(eac_bigrams_decreasing) > 0){
+
+  tab_gg <- eac_bigrams_decreasing %>%
+    select(bigram, description1, description2, statistic, adjusted.p.value, time_floor, frequency) %>%
+    mutate(adjusted.p.value = format(adjusted.p.value, digits = 3, scientific = TRUE)) %>%
+    arrange(bigram) %>%
+    nest(data = c(time_floor, frequency)) %>%
+    mutate(trend = map(.x = data, .f = function(.x){
+
+      ggplot(data = .x) +
+        geom_line(aes(x = time_floor, y = frequency), color = pal[2], size = 1.0) +
+        scale_y_continuous(limits = c(0, NA)) +
+        theme_minimal() +
+        labs(x = "",
+             y = "")
+    }))
+
+  ft_gg <- tab_gg %>%
+    flextable(col_keys = c("bigram", "description1", "description2", "statistic", "adjusted.p.value", "trend")) %>%
+    set_header_labels(
+      bigram = "ICD-10 Bigram",
+      description1 = "Description 1",
+      description2 = "Description 2",
+      statistic = "Statistic",
+      adjusted.p.value = "Adjusted p-value",
+      trend = "Trend"
+    ) %>%
+    mk_par(j = "trend", value = as_paragraph(
+      gg_chunk(value = trend, width = 4, height = 2)
+    )) %>%
+    theme_box()  %>%
+    colformat_double(digits = 2)
+
+  ft_gg
+
+}else{
+
+  cat("No significantly decreasing bigrams found.")
+
+}
+
+```
+
+# Cause of Death {data-navmenu="Word Alerts"}
+
+```{r COD word alerts, echo = FALSE, warning = FALSE, message = FALSE}
+
+cod_tokens <- data %>%
+  corpus(
+    text_field = "cause_of_death"
+  ) %>%
+  tokens(
+    what = "word",
+    remove_punct = TRUE,
+    remove_symbols = TRUE,
+    remove_numbers = TRUE,
+    remove_separators = TRUE,
+    verbose = FALSE
+  ) %>%
+  tokens_select(pattern = toupper(str_remove_all(stopwords("english"), "[[:punct:]]")), selection = "remove")
+
+cod_unigram_freq <- cod_tokens %>%
+  tokens_ngrams(n = 1) %>%
+  dfm(tolower = FALSE, verbose = FALSE) %>%
+  textstat_frequency(groups = mmwr_week) %>%
+  as.data.frame() %>%
+  rename(
+    mmwr_week = group,
+    unigram = feature,
+    n = frequency
+  ) %>%
+  relocate(mmwr_week) %>%
+  mutate(mmwr_week = as.Date(mmwr_week))
+
+# cod_bigram_freq <- cod_tokens %>%
+#   tokens_ngrams(n = 2, concatenator = " ") %>%
+#   dfm(tolower = FALSE, verbose = FALSE) %>%
+#   textstat_frequency(groups = mmwr_week) %>%
+#   as.data.frame() %>%
+#   rename(
+#     mmwr_week = group,
+#     bigram = feature,
+#     n = frequency
+#   ) %>%
+#   relocate(mmwr_week) %>%
+#   mutate(mmwr_week = as.Date(mmwr_week))
+
+min_date <- max(data$mmwr_week) - (7 * 5)
+
+visits_baseline <- data %>%
+  filter(mmwr_week >= min_date & mmwr_week <= max(mmwr_week) - 7) %>%
+  nrow()
+
+visits_test <- data %>%
+  filter(mmwr_week == max(mmwr_week)) %>%
+  nrow()
+
+cod_ctab <- cod_unigram_freq %>%
+  filter(mmwr_week >= min_date) %>%
+  filter(mmwr_week != (max(mmwr_week) - 7)) %>%
+  mutate(period = ifelse(mmwr_week == max(mmwr_week), "test", "baseline")) %>%
+  group_by(unigram, period) %>%
+  summarise(n = sum(n)) %>%
+  ungroup() %>%
+  arrange(-n) %>%
+  pivot_wider(names_from = period, values_from = n) %>%
+  filter(!is.na(baseline) & !is.na(test)) %>%
+  mutate(
+    cell_a = test,
+    cell_b = visits_test - test,
+    cell_c = baseline,
+    cell_d = visits_baseline - baseline
+  ) %>%
+  rowwise() %>%
+  mutate(scale = ifelse(min(cell_b, cell_c) < 100, "Moderate Counts", "Large Counts"))
+
+cod_fisher <- cod_ctab %>%
+  filter(scale == "Moderate Counts") %>%
+  mutate(
+    m = cell_a + cell_c,
+    n = cell_b + cell_d,
+    k = cell_a + cell_b,
+    x = cell_a,
+    low = max(0, k - n),
+    high = min(cell_a + cell_b, cell_a + cell_c),
+    p.value = phyper(x - 1, m, n, k, lower.tail = FALSE)
+  ) %>%
+  ungroup() %>%
+  mutate(n = cell_a) %>%
+  select(
+    unigram,
+    n,
+    cell_a,
+    cell_b,
+    cell_c,
+    cell_d,
+    scale,
+    p.value
+  ) %>%
+  filter(p.value < 0.05)
+
+cod_chisq <- cod_ctab %>%
+  ungroup() %>%
+  filter(scale == "Large Counts") %>%
+  mutate(
+    n11 = cell_a,
+    n12 = cell_b,
+    n21 = cell_c,
+    n22 = cell_d,
+    r1 = n11 + n12,
+    r2 = n21 + n22,
+    c1 = n11 + n21,
+    c2 = n12 + n22,
+    n = r1 + r2,
+    expected_a = (r1 * c1) / n,
+    expected_b = (r1 * c2) / n,
+    expected_c = (r2 * c1) / n,
+    expected_d = (r2 * c2) / n,
+    test_statistic = ((n11 - expected_a)^2 / expected_a) + ((n12 - expected_b)^2 / expected_b) + ((n21 - expected_c)^2 / expected_c) + ((n22 - expected_d)^2 / expected_d),
+    p.value = pchisq(test_statistic, df = 1, lower.tail = FALSE)
+  ) %>%
+  filter(cell_a > expected_a) %>%
+  mutate(n = cell_a) %>%
+  select(
+    unigram,
+    n,
+    cell_a,
+    cell_b,
+    cell_c,
+    cell_d,
+    scale,
+    p.value
+  ) %>%
+  filter(p.value < 0.05)
+
+denominators <- cod_unigram_freq %>%
+  group_by(mmwr_week) %>%
+  summarise(total = sum(n))
+
+cod_alerts <- cod_fisher %>%
+  bind_rows(cod_chisq) %>%
+  mutate(mmwr_week = max(data$mmwr_week) %>% ymd()) %>%
+  left_join(denominators, by = "mmwr_week") %>%
+  mutate(prop = n / total)
+
+cod_trends <- cod_unigram_freq %>%
+  filter(unigram %in% cod_alerts$unigram) %>%
+  left_join(denominators, by = "mmwr_week") %>%
+  mutate(prop = n / total) %>%
+  arrange(unigram, mmwr_week) %>%
+  select(
+    mmwr_week,
+    unigram,
+    n, 
+    total, 
+    prop
+  ) %>%
+  complete(mmwr_week, unigram, fill = list(n = 0, prop = 0)) %>%
+  arrange(unigram, mmwr_week) %>%
+  group_by(mmwr_week) %>%
+  fill(total, .direction = "updown") %>%
+  left_join(
+    cod_alerts %>%
+      select(
+        unigram,
+        p.value,
+        scale
+      ),
+    by = "unigram"
+  ) %>%
+  group_by(unigram) %>%
+  mutate(
+    n = last(n), 
+    total = last(total), 
+    prop_current = last(prop),
+    date = last(mmwr_week)
+  )
+
+```
+
+## Column
+
+### Cause of Death Word Alerts (Unigrams)
+
+```{r COD alerts, echo = FALSE, warning = FALSE, message = FALSE, fig.height = 8, eval = F}
+
+cod_alerts_fig <- cod_alerts %>%
+  arrange(unigram) %>%
+  mutate(
+    size = 2 * log(n + 1),
+    date_label = format(mmwr_week, "%b %d %Y"),
+    date_label = fct_reorder(date_label, mmwr_week)
+  ) %>%
+  nest(data = everything()) %>%
+  mutate(coords = map(.x = data, .f = function (.x) {
+    circleProgressiveLayout(.x$size, sizetype = "area")
+  })) %>%
+  unnest(cols = c(data, coords))
+
+plot_ly(
+  data = cod_alerts_fig,
+  x = ~x,
+  y = ~y,
+  text = ~unigram
+) %>%
+  add_markers(
+    type = "scatter",
+    mode = "markers",
+    size = ~ 2 * radius,
+    marker = list(symbol = "circle", sizemode = "diameter", color = "#005EAA", line = list(color = "black", width = 2)),
+    showlegend = FALSE,
+    text = ~ paste(
+      "<br>Date:</b>", mmwr_week,
+      "<br>Unigram:</b>", unigram,
+      "<br>Frequency:</b>", format(n, big.mark = ","),
+      "<br>Proportion:</b>", format(prop, digits = 3, scientific = TRUE), 
+      "<br>p-value:</b>", format(p.value, digits = 3, scientific = TRUE)
+    ),
+    hoverinfo = "text",
+    height = 1400
+  ) %>%
+  add_text(textposition = "lower center", textfont = list(color = "black"), showlegend = FALSE) %>%
+  layout(
+    xaxis = list(
+      title = "",
+      showticklabels = FALSE,
+      zeroline = FALSE,
+      showline = FALSE,
+      showgrid = FALSE,
+      fixedrange = FALSE,
+      autoscale = TRUE
+    ),
+    yaxis = list(
+      title = "",
+      showticklabels = FALSE,
+      zeroline = FALSE,
+      showline = FALSE,
+      showgrid = FALSE,
+      fixedrange = FALSE,
+      autoscale = TRUE
+    ),
+    legend = list(showlegend = FALSE),
+    hoverlabel = list(align = "left")
+  )
+
+```
+
+### Cause of Death Word Alert List (Unigrams)
+
+```{r COD alert table, echo = FALSE, warning = FALSE, message = FALSE}
+
+tab <- cod_trends %>%
+  group_by(unigram, date, n, total, prop_current, p.value, scale) %>%
+  summarise(
+    sparkline = spk_chr(
+      prop, 
+      type = "line", 
+      width = 120, 
+      height = 30, 
+      chartRangeMin = 0, 
+      disableInteraction = TRUE
+    )
+  ) %>%
+  ungroup() %>%
+  arrange(p.value) %>%
+  mutate(
+    p.value = format(p.value, digits = 3, scientific = TRUE),
+    detector = ifelse(scale == "Large Counts", "Chi-Square Test", "Fisher's Exact Test"),
+    prop_current = format(prop_current, digits = 3, scientific = TRUE),
+    detector = paste0(scale, ": ", detector)
+  ) %>%
+  select(
+    unigram, 
+    date, 
+    n, 
+    total, 
+    prop_current, 
+    detector, 
+    p.value,
+    sparkline
+  ) %>%
+  arrange(unigram)
+
+tab %>%
+  datatable(
+    class = "cell-border stripe", 
+    width = "100%", 
+    style = "bootstrap", 
+    rownames = FALSE, 
+    filter = "top", 
+    escape = FALSE, 
+    extensions = "Buttons", 
+    options = list(
+      dom = "Bfrtip",
+      buttons = c("csv", "excel", "pdf"),
+      scrollY = 700,
+      pageLength = nrow(tab),
+      autoWidth = TRUE,
+      columnDefs = list(
+        list(className = "dt-right", targets = c(2, 3, 4)),
+        list(className = "dt-right", targets = 6)
+      ),
+      initComplete = JS(
+        "function(settings, json) {",
+        "$(this.api().table().header()).css({'background-color': '#005EAA', 'color': '#FFF'});", 
+        "}"
+      )
+    ),
+    colnames = c("Unigram", "Date", "N", "Total", "Proportion", "Detector", "p-value", "Sparkline")
+  ) %>%
+  spk_add_deps() 
+
+```
+
+# EAC {data-navmenu="Word Alerts"}
+
+```{r EAC word alerts, echo = FALSE, warning = FALSE, message = FALSE}
+
+eac_tokens <- data %>%
+  corpus(
+    text_field = "eac"
+  ) %>%
+  tokens(
+    what = "word",
+    remove_punct = TRUE,
+    remove_symbols = TRUE,
+    remove_numbers = TRUE,
+    remove_separators = TRUE,
+    verbose = FALSE
+  ) %>%
+  tokens_select(pattern = toupper(str_remove_all(stopwords("english"), "[[:punct:]]")), selection = "remove")
+
+eac_unigram_freq <- eac_tokens %>%
+  tokens_ngrams(n = 1) %>%
+  dfm(tolower = FALSE, verbose = FALSE) %>%
+  textstat_frequency(groups = mmwr_week) %>%
+  as.data.frame() %>%
+  rename(
+    mmwr_week = group,
+    unigram = feature,
+    n = frequency
+  ) %>%
+  relocate(mmwr_week) %>%
+  mutate(mmwr_week = as.Date(mmwr_week))
+
+# eac_bigram_freq <- eac_tokens %>%
+#   tokens_ngrams(n = 2, concatenator = " ") %>%
+#   dfm(tolower = FALSE, verbose = FALSE) %>%
+#   textstat_frequency(groups = mmwr_week) %>%
+#   as.data.table() %>%
+#   .[, c("code1", "code2") := tstrsplit(feature, " ", fixed = TRUE)] %>%
+#   .[, bigram := fifelse(code1 < code2, paste(code1, code2), paste(code2, code1))] %>%
+#   .[, !c("code1", "code2")] %>%
+#   .[, .(frequency = sum(frequency)), by = c("bigram", "group")] %>%
+#   as.data.frame() %>%
+#   rename(
+#     mmwr_week = group,
+#     n = frequency
+#   ) %>%
+#   relocate(mmwr_week) %>%
+#   mutate(mmwr_week = as.Date(mmwr_week))
+
+min_date <- max(data$mmwr_week) - (7 * 5)
+
+visits_baseline <- data %>%
+  filter(mmwr_week >= min_date & mmwr_week <= max(mmwr_week) - 7) %>%
+  nrow()
+
+visits_test <- data %>%
+  filter(mmwr_week == max(mmwr_week)) %>%
+  nrow()
+
+eac_ctab <- eac_unigram_freq %>%
+  filter(mmwr_week >= min_date) %>%
+  filter(mmwr_week != (max(mmwr_week) - 7)) %>%
+  mutate(period = ifelse(mmwr_week == max(mmwr_week), "test", "baseline")) %>%
+  group_by(unigram, period) %>%
+  summarise(n = sum(n)) %>%
+  ungroup() %>%
+  arrange(-n) %>%
+  pivot_wider(names_from = period, values_from = n) %>%
+  filter(!is.na(baseline) & !is.na(test)) %>%
+  mutate(
+    cell_a = test,
+    cell_b = visits_test - test,
+    cell_c = baseline,
+    cell_d = visits_baseline - baseline
+  ) %>%
+  rowwise() %>%
+  mutate(scale = ifelse(min(cell_b, cell_c) < 100, "Moderate Counts", "Large Counts"))
+
+eac_fisher <- eac_ctab %>%
+  filter(scale == "Moderate Counts") %>%
+  mutate(
+    m = cell_a + cell_c,
+    n = cell_b + cell_d,
+    k = cell_a + cell_b,
+    x = cell_a,
+    low = max(0, k - n),
+    high = min(cell_a + cell_b, cell_a + cell_c),
+    p.value = phyper(x - 1, m, n, k, lower.tail = FALSE)
+  ) %>%
+  ungroup() %>%
+  mutate(n = cell_a) %>%
+  select(
+    unigram,
+    n,
+    cell_a,
+    cell_b,
+    cell_c,
+    cell_d,
+    scale,
+    p.value
+  ) %>%
+  filter(p.value < 0.1)
+
+eac_chisq <- eac_ctab %>%
+  ungroup() %>%
+  filter(scale == "Large Counts") %>%
+  mutate(
+    n11 = cell_a,
+    n12 = cell_b,
+    n21 = cell_c,
+    n22 = cell_d,
+    r1 = n11 + n12,
+    r2 = n21 + n22,
+    c1 = n11 + n21,
+    c2 = n12 + n22,
+    n = r1 + r2,
+    expected_a = (r1 * c1) / n,
+    expected_b = (r1 * c2) / n,
+    expected_c = (r2 * c1) / n,
+    expected_d = (r2 * c2) / n,
+    test_statistic = ((n11 - expected_a)^2 / expected_a) + ((n12 - expected_b)^2 / expected_b) + ((n21 - expected_c)^2 / expected_c) + ((n22 - expected_d)^2 / expected_d),
+    p.value = pchisq(test_statistic, df = 1, lower.tail = FALSE)
+  ) %>%
+  filter(cell_a > expected_a) %>%
+  mutate(n = cell_a) %>%
+  select(
+    unigram,
+    n,
+    cell_a,
+    cell_b,
+    cell_c,
+    cell_d,
+    scale,
+    p.value
+  ) %>%
+  filter(p.value < 0.1)
+
+denominators <- eac_unigram_freq %>%
+  group_by(mmwr_week) %>%
+  summarise(total = sum(n))
+
+eac_alerts <- eac_fisher %>%
+  bind_rows(eac_chisq) %>%
+  mutate(mmwr_week = max(data$mmwr_week) %>% ymd()) %>%
+  left_join(dictionary, by = c("unigram" = "code")) %>%
+  relocate(description, .after = unigram) %>%
+  select(-set) %>%
+  distinct() %>%
+  left_join(denominators, by = "mmwr_week") %>%
+  mutate(prop = (n / total))
+
+eac_trends <- eac_unigram_freq %>%
+  filter(unigram %in% eac_alerts$unigram) %>%
+  left_join(denominators, by = "mmwr_week") %>%
+  mutate(prop = n / total) %>%
+  arrange(unigram, mmwr_week) %>%
+  select(
+    mmwr_week,
+    unigram,
+    n, 
+    total, 
+    prop
+  ) %>%
+  complete(mmwr_week, unigram, fill = list(n = 0, prop = 0)) %>%
+  arrange(unigram, mmwr_week) %>%
+  group_by(mmwr_week) %>%
+  fill(total, .direction = "updown") %>%
+  left_join(
+    eac_alerts %>%
+      select(
+        unigram,
+        p.value,
+        scale
+      ),
+    by = "unigram"
+  ) %>%
+  group_by(unigram) %>%
+  mutate(
+    n = last(n), 
+    total = last(total), 
+    prop_current = last(prop),
+    date = last(mmwr_week)
+  ) %>%
+  left_join(dictionary, by = c("unigram" = "code")) %>%
+  relocate(description, .after = unigram) %>%
+  select(-set) %>%
+  distinct() %>%
+  mutate(unigram = paste0(unigram, ": ", description)) %>%
+  select(-description)
+
+```
+
+## Column
+
+### EAC Word Alerts (Unigrams)
+
+```{r EAC alerts, echo = FALSE, warning = FALSE, message = FALSE}
+
+if (nrow(eac_alerts) > 0) {
+  
+  eac_alerts_fig <- eac_alerts %>%
+    arrange(unigram) %>%
+    mutate(
+      size = 4 * log(n + 1),
+      date_label = format(mmwr_week, "%b %d %Y"),
+      date_label = fct_reorder(date_label, mmwr_week)
+    ) %>%
+    nest(data = everything()) %>%
+    mutate(coords = map(.x = data, .f = function (.x) {
+      circleProgressiveLayout(.x$size, sizetype = "area")
+    })) %>%
+    unnest(cols = c(data, coords))
+  
+  plot_ly(
+    data = eac_alerts_fig,
+    x = ~x,
+    y = ~y,
+    text = ~unigram
+  ) %>%
+    add_markers(
+      type = "scatter",
+      mode = "markers",
+      size = ~ 2 * radius,
+      marker = list(symbol = "circle", sizemode = "diameter", color = "#005EAA", line = list(color = "black", width = 2)),
+      showlegend = FALSE,
+      text = ~ paste(
+        "<br>Date:</b>", mmwr_week,
+        "<br>Unigram:</b>", unigram,
+        "<br>Description:</b>", description, 
+        "<br>Frequency:</b>", format(n, big.mark = ","),
+        "<br>Proportion:</b>", format(prop, digits = 3, scientific = TRUE), 
+        "<br>p-value:</b>", format(p.value, digits = 3, scientific = TRUE)
+      ),
+      hoverinfo = "text",
+      height = 1400
+    ) %>%
+    add_text(textposition = "lower center", textfont = list(color = "black"), showlegend = FALSE) %>%
+    layout(
+      xaxis = list(
+        title = "",
+        showticklabels = FALSE,
+        zeroline = FALSE,
+        showline = FALSE,
+        showgrid = FALSE,
+        fixedrange = FALSE,
+        autoscale = TRUE
+      ),
+      yaxis = list(
+        title = "",
+        showticklabels = FALSE,
+        zeroline = FALSE,
+        showline = FALSE,
+        showgrid = FALSE,
+        fixedrange = FALSE,
+        autoscale = TRUE
+      ),
+      legend = list(showlegend = FALSE),
+      hoverlabel = list(align = "left")
+    )
+  
+} else {
+  
+  cat(paste("No EAC alerts on", format(max(data$mmwr_week), "%B %d, %Y")))
+  
+}
+
+```
+
+### EAC Word Alert List (Unigrams)
+
+```{r EAC alert table, echo = FALSE, warning = FALSE, message = FALSE}
+
+if (nrow(eac_alerts) > 0) {
+  
+  tab <- eac_trends %>%
+    group_by(unigram, date, n, total, prop_current, p.value, scale) %>%
+    summarise(
+      sparkline = spk_chr(
+        prop, 
+        type = "line", 
+        width = 120, 
+        height = 30, 
+        chartRangeMin = 0, 
+        disableInteraction = TRUE
+      )
+    ) %>%
+    ungroup() %>%
+    arrange(p.value) %>%
+    mutate(
+      p.value = format(p.value, digits = 3, scientific = TRUE),
+      detector = ifelse(scale == "Large Counts", "Chi-Square Test", "Fisher's Exact Test"),
+      prop_current = format(prop_current, digits = 3, scientific = TRUE),
+      detector = paste0(scale, ": ", detector)
+    ) %>%
+    select(
+      unigram, 
+      date, 
+      n, 
+      total, 
+      prop_current, 
+      detector, 
+      p.value,
+      sparkline
+    ) %>%
+    arrange(unigram)
+  
+  tab %>%
+    datatable(
+      class = "cell-border stripe", 
+      width = "100%", 
+      style = "bootstrap", 
+      rownames = FALSE, 
+      filter = "top", 
+      escape = FALSE, 
+      extensions = "Buttons", 
+      options = list(
+        dom = "Bfrtip",
+        buttons = c("csv", "excel", "pdf"),
+        scrollY = 700,
+        pageLength = nrow(tab),
+        autoWidth = TRUE,
+        columnDefs = list(
+          list(className = "dt-right", targets = c(2, 3, 4)),
+          list(className = "dt-right", targets = 6)
+        ),
+        initComplete = JS(
+          "function(settings, json) {",
+          "$(this.api().table().header()).css({'background-color': '#005EAA', 'color': '#FFF'});", 
+          "}"
+        )
+      ),
+      colnames = c("Unigram", "Date", "N", "Total", "Proportion", "Detector", "p-value", "Sparkline")
+    ) %>%
+    spk_add_deps() 
+  
+} else {
+  
+  cat(paste("No EAC alerts on", format(max(data$mmwr_week), "%B %d, %Y")))
+  
+}
+
+```
