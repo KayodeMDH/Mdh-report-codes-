@@ -1,0 +1,303 @@
+#This R scripts runs the R markdown script. 
+
+library(tidyverse)
+library(Rnssp)
+library(janitor)
+library(lubridate)
+library(MMWRweek)
+library(RODBC)
+
+
+gl_path <- "/opt/sas/shared/homes/kayorinde01/MN_DQ_Report"
+# Sys.setenv(RSTUDIO_PANDOC="/usr/lib/rstudio-server/bin/quarto/bin/tools")
+Sys.setenv(RSTUDIO_PANDOC = "/usr/lib/rstudio-server/bin/quarto/bin/tools/x86_64")
+
+setwd(gl_path)
+
+# Load Rnssp profile (needs manual update once every 90 days by using the Create User Profile (GUI) option under Addins
+# dropdown (below the Profile and Tools menu at the very top)
+load("~/myProfile.rda")
+
+start_date <- Sys.Date() - 16
+end_date <- as.Date(Sys.Date() - 1)
+# Date labels
+start_date_lab <- format(start_date, "%B %d, %Y")
+end_date_lab <- format(end_date, "%B %d, %Y")
+
+# SQL Dates
+beginning_date <- gsub("-", "", start_date)
+ending_date <- gsub("-", "", end_date)
+
+# ESSENCE API Dates
+startDate <- format(start_date, "%d%b%Y")
+endDate <- format(end_date, "%d%b%Y")
+
+patient_class <- "E (Emergency Department)"
+
+recastTimezone.POSIXct <- function(x, timezone) {
+  return(
+    as.POSIXct(as.character(x), origin = as.POSIXct("1970-01-01"), tz = timezone)
+  )
+}
+
+# Timezone 
+timezone <- "US/Eastern"
+local_time <- with_tz(Sys.time(), tzone = paste0(timezone))
+system_time <- Sys.time()
+adjusted_local_time <- recastTimezone.POSIXct(local_time, "UTC")
+adt_adjustment <- as.integer(difftime(floor_date(system_time, "hour"), floor_date(adjusted_local_time, "hour"), units = "hours"))
+local_time_display <- format(with_tz(Sys.time(), tzone = paste0(timezone)), "%r")
+
+# Site
+site <- "MN"
+
+# Format patient class for SQL pull and report display
+pat.class <- "Emergency Department"
+patient_class <- "E"
+
+# Specify facilities
+# fac <- "&geography=18019&geography=34568&geography=33688&geography=33689&geography=33690&geography=33691&geography=33692&geography=33693&geography=33694&geography=33695&geography=33698&geography=33699&geography=33696&geography=33697&geography=34570&geography=34502&geography=18020"
+
+# Credentials
+decodeProfile <- function(profile){ 
+  list(
+    "username" = safer::decrypt_string(
+      profile$.__enclos_env__$private$..username$value, 
+      profile$.__enclos_env__$private$..__$value 
+    ), 
+    "password" = safer::decrypt_string(
+      profile$.__enclos_env__$private$..password$value, 
+      profile$.__enclos_env__$private$..__$value
+    ) 
+  ) 
+}
+
+dec <- decodeProfile(myProfile)
+
+
+con <- RODBC::odbcConnect(
+  "BioSense_Platform",
+  uid = paste0("biosense\\", dec$username),
+  pwd = dec$password
+)
+
+# Pull MFT table
+MFT <- RODBC::sqlQuery(
+  con,
+  paste0(
+    "SELECT *
+      FROM ",
+    site,
+    "_MFT"
+  )
+)
+
+
+# Pull site Operational Crosswalk
+operational_crosswalk <-
+  RODBC::sqlQuery(
+    con,
+    paste0(
+      "SELECT C_Biosense_Facility_ID,
+      Facility_Status,
+      Patient_Class_Code
+      FROM ",
+      site,
+      "_Operational_Crosswalk"
+    )
+  )
+
+fac<-paste0("&geography=", MFT$C_Biosense_Facility_ID, collapse = "")
+
+# Pull onboarding facilities from crosswalk
+onboarding <- operational_crosswalk %>%
+  filter(Patient_Class_Code == paste0(patient_class) &
+           Facility_Status == "Onboarding") %>%
+  dplyr::select(-Facility_Status, -Patient_Class_Code) %>%
+  dplyr::distinct()
+
+# Pull active crosswalk facilities
+active_crosswalk <- operational_crosswalk %>%
+  filter(Patient_Class_Code == paste0(patient_class) &
+           Facility_Status == "Active") %>%
+  dplyr::select(C_Biosense_Facility_ID) %>%
+  dplyr::distinct()
+
+
+
+# Filter to Patient Class selected (not active status, as leaving it allows you to see inactive/onboarding facilities making it through to PR_Production as a QI measure)
+MFT <- MFT %>%
+  filter(Patient_Class_Code == paste0(patient_class)) %>%
+  mutate(
+    Facility_Name = str_trim(Facility_Name, side = "both"),
+    Facility_Name = gsub(", Inc.", "", Facility_Name),
+    Facility_Name = gsub(" Inc.", "", Facility_Name),
+    Facility_Name = gsub(" LLC", "", Facility_Name),
+    Facility_Name = gsub(", LLC", "", Facility_Name)
+  ) %>%
+  dplyr::select(Facility_Name, C_Biosense_Facility_ID, Parent_Organization) %>%
+  dplyr::distinct()
+# Join facility names to Crosswalk
+active_crosswalk <-
+  dplyr::left_join(active_crosswalk, MFT, by = "C_Biosense_Facility_ID") %>%
+  dplyr::distinct() %>%
+  dplyr::arrange(Facility_Name)
+# Join facility names to onboarding facilities
+onboarding <-
+  dplyr::left_join(onboarding, MFT, by = "C_Biosense_Facility_ID") %>%
+  dplyr::distinct() %>%
+  dplyr::arrange(Facility_Name)
+# Pull crosswalk C_Biosense_Facility_IDs for later Validity API call
+CBIDs <- active_crosswalk %>%
+  dplyr::select(C_Biosense_Facility_ID) %>%
+  dplyr::distinct() %>%
+  pull()
+
+# Pull all NSSP Priority 1, Priority 2, and message time variables
+ED.messages <- RODBC::sqlQuery(con, paste0(
+  "SELECT Feed_Name, C_Biosense_Facility_ID, C_Facility_ID, C_Biosense_ID, Visit_ID, Processed_ID, Processing_ID, C_Unique_Patient_ID, Message_ID, Treating_Facility_ID, Sending_Facility_ID, Facility_Type_Code, C_FacType_Patient_Class, Diagnosis_Date_Time,  C_Patient_Class, Patient_Class_Code, Initial_Acuity_Code, Ambulatory_Status, Death_Date_Time, Admit_Date_Time, Procedure_Code, Procedure_Description, Admission_Type, Patient_Death_Indicator, Birth_Date_time, Pregnancy_Status_Code, Initial_Acuity_Description, Procedure_Date_Time, Height, Triage_Notes, Height_Units, Admit_Reason_Description, C_Chief_Complaint, Chief_Complaint_Text, C_Death, C_Patient_Age, C_Patient_Age_Years, Diagnosis_Code, Diagnosis_Description, Patient_Zip, Pregnancy_Status_Description, Age_Reported, Weight_Units, Trigger_Event, Arrived_Date, Arrived_Date_Time, C_Visit_Date, C_Visit_Date_Time, Weight, Message_Date_Time, Smoking_Status_Description, Smoking_Status_Code, Recorded_Date_Time, Create_Raw_Date_Time, Insurance_Coverage, Sending_Facility_ID_Source, Discharge_Disposition, Discharge_Date_Time, First_Patient_ID, Medical_Record_Number, Admit_Reason_Code, Chief_Complaint_Code, Diagnosis_Type, Administrative_Sex, Age_Reported, Age_Units_Reported, C_Patient_Age_Units, C_Patient_Age_Source, C_Patient_County, Ethnicity_Code, Ethnicity_Description, Patient_City, Patient_State, Patient_Country, Race_Code, Race_Description, Version_ID FROM ",
+  site,
+  "_PR_Processed WITH (nolock) WHERE C_Patient_Class='",
+  patient_class,
+  "' and C_Unique_Patient_ID_Source!='First Patient ID' and cast(C_Visit_Date as date) >='",
+  beginning_date,
+  "'",
+  " and cast(C_Visit_Date as date) <='",
+  ending_date,
+  "'"
+))
+
+# Data wrangle, make sure dates are formatted, remove non-informative chief complaints, remove invalid facilities (will have a blank facility name if they aren't present in the Operational Crosswalk)
+ED.messages <- ED.messages %>%
+  dplyr::left_join(active_crosswalk,
+                   by = "C_Biosense_Facility_ID"
+  ) %>%
+  mutate(
+    Facility_Name = str_trim(Facility_Name, side = "both"),
+    Date = as.Date(C_Visit_Date),
+    C_Visit_Date = as.Date(C_Visit_Date),
+    Arrived_Date = as.Date(Arrived_Date),
+    C_Visit_Date_Time = as.POSIXct(C_Visit_Date_Time, format = "%Y-%m-%d %H:%M:%S"),
+    Arrived_Date_Time = as.POSIXct(Arrived_Date_Time, format = "%Y-%m-%d %H:%M:%S"),
+    Message_Date_Time = as.POSIXct(Message_Date_Time, format = "%Y-%m-%d %H:%M:%S"),
+    Recorded_Date_Time = as.POSIXct(Recorded_Date_Time, format = "%Y-%m-%d %H:%M:%S"),
+    C_Chief_Complaint = gsub(
+      "NA|UNK|NULL|UNK|UNKNOWN|ER|Emergency Room|EMS|null|unk|ed|ed visit|er|na|illness|General|Ambulance|Medic|Chief complaint not present|ed visit|er|Advice Only|Other|xxx|Evaluation|Follow up|medical|General symptom|AMR|EMS//Arrived By|EMS//Ambulance|Triage|Document|DOCUMENT|Triage peds|Triage-|Triage peds-|See chief complaint quote|See CC quote|Sick|Injury|ill|Eval|squad|Referral|Code 1|Code 3|follow-up",
+      "",
+      C_Chief_Complaint,
+      ignore.case = FALSE
+    ),
+    C_Chief_Complaint = gsub("[//?,.;'-]+", "", C_Chief_Complaint),
+    C_Chief_Complaint = gsub("//S", "", C_Chief_Complaint),
+    Diagnosis_Code = gsub(
+      "NA|UNK|NULL|UNK|UNKNOWN|ER|Emergency Room|EMS|null|unk|ed|ed visit|er|na|illness|General|Ambulance|Medic|Chief complaint not present|ed visit|er|Advice Only|Other|xxx|Evaluation|Follow up|medical|General symptom|AMR|EMS//Arrived By|EMS//Ambulance|Triage|Document|DOCUMENT|Triage peds|Triage-|Triage peds-|See chief complaint quote|See CC quote|Sick|Injury|ill|Eval|squad|Referral|Code 1|Code 3|follow-up",
+      "",
+      Diagnosis_Code,
+      ignore.case = FALSE
+    ),
+    Diagnosis_Code = gsub("//S", "", Diagnosis_Code),
+    Diagnosis_Code = gsub("[//?,.;'-]+", "", Diagnosis_Code),
+    Sending_Facility_ID = as.character(Sending_Facility_ID),
+    Treating_Facility_ID = as.character(Treating_Facility_ID),
+    Feed = paste0(site, "_Feed")
+  ) %>%
+  mutate(Arrived_Date_Time = Arrived_Date_Time - lubridate::hours(paste0(adt_adjustment))) %>%
+  filter(Facility_Name != "")
+
+# Set blank chief complaints and diagnosis codes to NA
+ED.messages$C_Chief_Complaint[ED.messages$C_Chief_Complaint == ""] <- NA
+ED.messages$Diagnosis_Code[ED.messages$Diagnosis_Code == ""] <- NA
+
+# format dates for ESSENCE facility pull
+end.Date <- format(end_date, "%d%b%Y")
+start.Date <- format(start_date, "%d%b%Y")
+
+# Pull using table builder API, allows you to check facility count and visit count
+url <- paste0("https://essence.syndromicsurveillance.org/nssp_essence/api/tableBuilder?endDate=", end.Date, "&geography=mn&percentParam=noPercent&datasource=va_hosp&startDate=", start.Date, "&medicalGroupingSystem=essencesyndromes&userId=2765&hospFacilityType=emergency%20care&aqtTarget=TableBuilder&geographySystem=hospitalstate&detector=nodetectordetector&timeResolution=daily&hasBeenE=1&rowFields=timeResolution&columnField=hospitalGrouping")
+
+facility.count <- myProfile$get_api_data(url, fromCSV = FALSE)
+
+# CC and DD Available
+url <- paste0("https://essence.syndromicsurveillance.org/nssp_essence/api/timeSeries?endDate=", end.Date, fac, "&percentParam=ccAvailable&datasource=va_hosp&startDate=", start.Date, "&medicalGroupingSystem=essencesyndromes&userId=2765&hospFacilityType=emergency%20care&aqtTarget=TimeSeries&geographySystem=hospital&detector=probrepswitch&ccAvailable=1&timeResolution=daily&hasBeenE=1")
+
+cc.available <- myProfile$get_api_data(url, fromCSV = FALSE) %>%
+  pluck("timeSeriesData") %>%
+  mutate(date = as.Date(date))
+
+url <- paste0("https://essence.syndromicsurveillance.org/nssp_essence/api/timeSeries?endDate=", end.Date, fac, "&percentParam=ddAvailable&datasource=va_hosp&startDate=", start.Date, "&medicalGroupingSystem=essencesyndromes&userId=2765&hospFacilityType=emergency%20care&aqtTarget=TimeSeries&geographySystem=hospital&detector=probrepswitch&ddAvailable=1&timeResolution=daily&hasBeenE=1")
+
+dd.available <- myProfile$get_api_data(url, fromCSV = FALSE) %>%
+  pluck("timeSeriesData") %>%
+  mutate(date = as.Date(date))
+
+url <- paste0("https://essence.syndromicsurveillance.org/nssp_essence/api/timeSeries?endDate=", end.Date, fac, "&percentParam=ccAvailable&datasource=va_hosp&startDate=", start.Date, "&medicalGroupingSystem=essencesyndromes&userId=2765&hospFacilityType=emergency%20care&aqtTarget=TimeSeries&geographySystem=hospital&detector=probrepswitch&ccAvailable=1&timeResolution=daily&hasBeenE=1&stratVal=&multiStratVal=geography&graphOnly=true&numSeries=0&graphOptions=multipleSmall&seriesPerYear=false&nonZeroComposite=false&removeZeroSeries=true&startMonth=January&stratVal=&multiStratVal=geography&graphOnly=true&numSeries=0&graphOptions=multipleSmall&seriesPerYear=false&startMonth=January&nonZeroComposite=false")
+
+# CC Available by Facility
+cc.available.facility <- myProfile$get_api_data(url, fromCSV = FALSE) %>%
+  pluck("timeSeriesData") %>%
+  mutate(date = as.Date(date))
+
+# DD Available by Facility
+url <- paste0("https://essence.syndromicsurveillance.org/nssp_essence/api/timeSeries?endDate=", end.Date, fac, "&percentParam=ddAvailable&datasource=va_hosp&startDate=", start.Date, "&medicalGroupingSystem=essencesyndromes&userId=2765&hospFacilityType=emergency%20care&aqtTarget=TimeSeries&geographySystem=hospital&detector=probrepswitch&ddAvailable=1&timeResolution=daily&hasBeenE=1&stratVal=&multiStratVal=geography&graphOnly=true&numSeries=0&graphOptions=multipleSmall&seriesPerYear=false&nonZeroComposite=false&removeZeroSeries=true&startMonth=January&stratVal=&multiStratVal=geography&graphOnly=true&numSeries=0&graphOptions=multipleSmall&seriesPerYear=false&startMonth=January&nonZeroComposite=false")
+
+dd.available.facility <- myProfile$get_api_data(url, fromCSV = FALSE) %>%
+  pluck("timeSeriesData") %>%
+  mutate(date = as.Date(date))
+
+# Pull CCInformative and DDInformative metrics using ESSENCE API
+url <-
+  paste0(
+    "https://essence.syndromicsurveillance.org/nssp_essence/api/timeSeries?endDate=",
+    endDate,
+    fac,
+    "&percentParam=ccInformative&datasource=va_hosp&startDate=",
+    startDate,
+    "&medicalGroupingSystem=essencesyndromes&userId=2765&aqtTarget=TimeSeries&geographySystem=hospital&detector=probrepswitch&ccInformative=1&timeResolution=daily&hasBeen",
+    patient_class,
+    "=1"
+  )
+cc.informative <- myProfile$get_api_data(url, fromCSV = FALSE) %>%
+  pluck("timeSeriesData") %>%
+  mutate(date = as.Date(date))
+
+url <-
+  paste0(
+    "https://essence.syndromicsurveillance.org/nssp_essence/api/timeSeries?endDate=",
+    endDate,
+    fac,
+    "&percentParam=ddInformative&datasource=va_hosp&startDate=",
+    startDate,
+    "&medicalGroupingSystem=essencesyndromes&userId=2765&aqtTarget=TimeSeries&geographySystem=hospital&detector=probrepswitch&ddInformative=1&timeResolution=daily&hasBeen",
+    patient_class,
+    "=1"
+  )
+dd.informative <- myProfile$get_api_data(url, fromCSV = FALSE) %>%
+  pluck("timeSeriesData") %>%
+  mutate(date = as.Date(date))
+
+# Set up SQL query and join to facility names
+query <-
+  paste0(
+    "SELECT distinct(d.Facility_Name), count(*) as count, cast(a.Arrived_Date as date) as Arrived_Date, c.Exceptions_Reason as Reason_Text from ",
+    site,
+    "_PR_Except a with (nolock) join ",
+    site,
+    "_PR_Except_Reason b ON a.Message_ID=b.Message_ID JOIN BioSense_Platform.dbo.Except_Reasons c ON b.Exceptions_Reason_Code=c.Exceptions_Reason_Code right outer join ",
+    site,
+    "_MFT d with (nolock) on a.C_Biosense_Facility_ID=d.C_Biosense_Facility_ID WHERE cast(a.Arrived_Date as date) >='",
+    beginning_date,
+    "'",
+    " and cast(Arrived_Date as date) <='",
+    ending_date,
+    "' group by c.Exceptions_Reason, d.Facility_Name, cast(a.Arrived_Date as date)"
+  )
+# Run query
+table_messages <- RODBC::sqlQuery(con, query)
+
+# Source Rmd file
+rmarkdown::render(
+  input = paste0(gl_path, "/minnsota_dq_report.Rmd"),
+  output_file = paste0(gl_path, "/MN_DQ_Report.html")
+)
+
+
